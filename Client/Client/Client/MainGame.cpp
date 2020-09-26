@@ -2,6 +2,7 @@
 #include "MainGame.h"
 #include "KeyMgr.h"
 
+
 MainGame::MainGame()
 {
 }
@@ -167,24 +168,21 @@ void MainGame::InitNetwork()
 {
 	WSADATA WSAdata;
 	WSAStartup(MAKEWORD(2, 0), &WSAdata);
-	serverSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, 0);
+	serverSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	SOCKADDR_IN serverAddress;
 	memset(&serverAddress, 0, sizeof(SOCKADDR_IN));
 	serverAddress.sin_family = AF_INET;
 	serverAddress.sin_port = htons(PORT);
-	inet_pton(AF_INET, SERVER_ADDR, &serverAddress.sin_addr);
-	if (0 != WSAConnect(serverSocket, (sockaddr*)&serverAddress, sizeof(SOCKADDR_IN), NULL, NULL, NULL, NULL)) {
+	inet_pton(AF_INET, SERVER_IP, &serverAddress.sin_addr);
+	if (connect(serverSocket, (sockaddr*)&serverAddress, sizeof(SOCKADDR_IN))) {
 		MessageBox(g_hwnd, L"WSAConnect", L"Failed", MB_OK);
 	}
 
 	// WSAAsyncSelect(serverSocket, g_hwnd, WM_SOCKET, FD_CLOSE | FD_READ); // 윈도우 메시지로도 안읽어와지네.. 왜지/..
-
 	send_wsabuf.buf = send_buffer;
 	send_wsabuf.len = BUF_SIZE;
 	recv_wsabuf.buf = recv_buffer;
 	recv_wsabuf.len = BUF_SIZE;
-
-
 }
 
 void MainGame::ReadPacket()

@@ -7,15 +7,13 @@ using namespace std;
 
 #pragma comment(lib, "Ws2_32.lib")
 
-constexpr int BUF_SIZE = 1024;
 constexpr short PORT = 3500;
 
 int clientPtX = 0;
 int clientPtY = 0;
 
-char	packet_buffer[BUF_SIZE] = "";
-char send_buffer[BUF_SIZE + 1] = "";
-char recv_buffer[BUF_SIZE + 1] = "";
+char send_buffer[MAX_BUFFER]= "";
+char recv_buffer[MAX_BUFFER] = "";
 
 WSABUF send_wsabuf;
 WSABUF recv_wsabuf;
@@ -23,46 +21,44 @@ WSABUF recv_wsabuf;
 SOCKET clientSocket;
 
 void error_disp(const char* msg, int err_no);
-void ProcessPacket(char* packet);
+void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes);
+
+void CALLBACK recv_complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags);
+void CALLBACK send_complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags);
 
 int main()
 {
 	wcout.imbue(std::locale("korean"));
 	WSADATA WSAdata;
 	WSAStartup(MAKEWORD(2, 0), &WSAdata);
-	SOCKET serverSocket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, 0, 0);
+	SOCKET serverSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	SOCKADDR_IN serverAddress;
 	memset(&serverAddress, 0, sizeof(serverAddress));
 	serverAddress.sin_family = AF_INET;
 	serverAddress.sin_port = htons(PORT);
 	serverAddress.sin_addr.s_addr = INADDR_ANY;
 	::bind(serverSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
-	listen(serverSocket, SOMAXCONN);
+	listen(serverSocket, 10);
 
 	send_wsabuf.buf = send_buffer;
-	send_wsabuf.len = BUF_SIZE;
+	send_wsabuf.len = MAX_BUFFER;
 	recv_wsabuf.buf = recv_buffer;
-	recv_wsabuf.len = BUF_SIZE;
+	recv_wsabuf.len = MAX_BUFFER;
+
+	SOCKADDR_IN clientAddress;
+	WSAOVERLAPPED overlapped;
 
 	while (true) {
-		SOCKADDR_IN clientAddress;
 		INT a_size = sizeof(clientAddress);
-		clientSocket = WSAAccept(serverSocket, (sockaddr*)&clientAddress, &a_size, NULL, NULL);
+		clientSocket = accept(serverSocket, (sockaddr*)&clientAddress, &a_size);
 		if (SOCKET_ERROR == clientSocket)
-			error_disp("WSAAccept", WSAGetLastError());
+			error_disp("accept", WSAGetLastError());
 		cout << "New client accepted.\n";
-		while (true) {
-			DWORD num_recv;
-			DWORD flag = 0;
-			WSARecv(clientSocket, &recv_wsabuf, 1, &num_recv, &flag, NULL, NULL);
-			if (0 == num_recv)
-				break; // 클라이언트 종료 처리
-			memcpy(packet_buffer, recv_wsabuf.buf, num_recv);
-			cout << "Received " << num_recv << "Bytes\n";
-			ProcessPacket(packet_buffer); // 패킷 처리
-		}
-		cout << "Client connection closed.\n";
-		closesocket(clientSocket);
+		recv_wsabuf.buf = recv_buffer;
+		recv_wsabuf.len = MAX_BUFFER;
+		DWORD flags = 0;
+		ZeroMemory(&overlapped, sizeof(overlapped));
+		int recvBytes = WSARecv(clientSocket, &recv_wsabuf, 1, NULL, &flags, &overlapped, recv_complete);
 	}
 	closesocket(serverSocket);
 	WSACleanup();
@@ -70,7 +66,7 @@ int main()
 
 }
 
-void ProcessPacket(char* packet) {
+void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes) {
 	cs_packet_up* p = reinterpret_cast<cs_packet_up*>(packet);
 	int x = clientPtX;
 	int y = clientPtY;
@@ -102,10 +98,10 @@ void ProcessPacket(char* packet) {
 	movePacket->x = clientPtX;
 	movePacket->y = clientPtY;
 
-	send_wsabuf.buf = send_buffer;
-
-	DWORD num_send;
-	int ret = WSASend(clientSocket, &send_wsabuf, 1, &num_send, 0, NULL, NULL);
+	// 받은 만큼 다시 보내기
+	send_wsabuf.len = bytes;
+	ZeroMemory(over, sizeof(*over));
+	int ret = WSASend(clientSocket, &send_wsabuf, 1, NULL, NULL, over, send_complete);
 	if (ret) {
 		int error_code = WSAGetLastError();
 		printf("Error while sending packet [%d]", error_code);
@@ -116,6 +112,36 @@ void ProcessPacket(char* packet) {
 		cout << "Sent Type[" << SC_MOVEPLAYER << "] Player's X[" << clientPtX << "] Player's Y[" << clientPtY << "]\n";
 	}
 }
+
+void CALLBACK recv_complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags) {
+	if (bytes > 0) {
+		ProcessPacket(recv_buffer, over, bytes);
+		recv_buffer[bytes] = 0;
+		// cout << "TRACE - Receive message : " << recv_buffer << "(" << bytes << " bytes)\n";
+	}
+	else {
+		// 클라이언트에서 접속을 끊었다
+		closesocket(clientSocket);
+		return;
+	}
+}
+
+
+void CALLBACK send_complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags) {
+	if (bytes > 0) {
+		//printf("TRACE - Send message : %s (%d bytes)\n", send_buffer, bytes);
+	}
+	else {
+		closesocket(clientSocket);
+		return;
+	}
+
+	// 다시 recv
+	recv_wsabuf.len = MAX_BUFFER; // 다시 얼마나 받을지 모르므로
+	ZeroMemory(over, sizeof(*over));
+	int ret = WSARecv(clientSocket, &recv_wsabuf, 1, NULL, &flags, over, recv_complete);
+}
+
 
 void error_disp(const char* msg, int err_no) {
 	WCHAR* h_mess;

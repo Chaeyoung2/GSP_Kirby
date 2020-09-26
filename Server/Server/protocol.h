@@ -6,6 +6,7 @@ const int CS_INPUTLEFT = 4;
 const int SC_MOVEPLAYER = 1;
 
 #define TILEMAX 7
+#define MAX_BUFFER        1024
 
 
 #pragma pack (push, 1)

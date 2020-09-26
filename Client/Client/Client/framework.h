@@ -33,6 +33,7 @@ using namespace std;
 #define PLAYERCY 50
 #define TILESIZE 100
 #define WM_SOCKET (WM_USER+1)
+#define SERVER_IP "127.0.0.1"
 
 // extern
 extern HWND g_hwnd;
@@ -50,6 +51,5 @@ typedef struct tagObject {
 // const
 constexpr int BUF_SIZE = 1024;
 constexpr short PORT = 3500;
-constexpr char SERVER_ADDR[] = "127.0.0.1";
 
 
