@@ -1,5 +1,6 @@
 #pragma once
 
+class KeyMgr;
 class MainGame
 {
 public:
@@ -20,6 +21,7 @@ private:
 	HDC hdc;
 	HBITMAP hBitmapBackGround;
 	HBITMAP hBitmapBackBuffer;
+	KeyMgr * pKeyMgr;
 private:
 	OBJ player;
 /// ////////////////////////////////////////////////////////////

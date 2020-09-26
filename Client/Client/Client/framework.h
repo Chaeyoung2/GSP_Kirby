@@ -34,7 +34,6 @@ using namespace std;
 #define TILESIZE 100
 #define WM_SOCKET (WM_USER+1)
 
-
 // extern
 extern HWND g_hwnd;
 

@@ -19,6 +19,8 @@ void MainGame::Start()
 	setObjectRect();
 
 	InitNetwork();
+
+	pKeyMgr = new KeyMgr;
 }
 
 void MainGame::Update()
@@ -69,16 +71,16 @@ void MainGame::Render()
 void MainGame::InputKeyState()
 {
 	int x = 0, y = 0;
-	if (KeyMgr::GetInstance()->OnceKeyUp(VK_UP)) {
+	if (pKeyMgr->OnceKeyUp(VK_UP)) {
 		y -= 1;
 	}
-	else if (KeyMgr::GetInstance()->OnceKeyUp(VK_DOWN)) {
+	else if (pKeyMgr->OnceKeyUp(VK_DOWN)) {
 		y += 1;
 	}
-	else if (KeyMgr::GetInstance()->OnceKeyUp(VK_LEFT)) {
+	else if (pKeyMgr->OnceKeyUp(VK_LEFT)) {
 		x -= 1;
 	}
-	else if (KeyMgr::GetInstance()->OnceKeyUp(VK_RIGHT)) {
+	else if (pKeyMgr->OnceKeyUp(VK_RIGHT)) {
 		x += 1;
 	}
 
@@ -224,6 +226,8 @@ void MainGame::Release()
 	DeleteObject(hBitmapBackBuffer);
 	DeleteObject(player.bitmap);
 
+	delete pKeyMgr;
+	
 	closesocket(serverSocket);
 	WSACleanup();
 }

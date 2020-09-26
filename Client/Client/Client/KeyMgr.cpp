@@ -1,18 +1,17 @@
 #include "KeyMgr.h"
 
-KeyMgr* KeyMgr::m_pInstance = nullptr;
 
 KeyMgr::KeyMgr(void)
-{
-}
-
-KeyMgr::~KeyMgr(void)
 {
 	ZeroMemory(m_bKeyDown, 256);
 	ZeroMemory(m_bKeyUp, 256);
 }
 
-bool KeyMgr::StayKeyDown(int nKey)
+KeyMgr::~KeyMgr(void)
+{
+}
+
+bool KeyMgr::StayKeyDown(INT nKey)
 {
 	if (GetAsyncKeyState(nKey) & 0x8000)
 		return true;
@@ -20,7 +19,7 @@ bool KeyMgr::StayKeyDown(int nKey)
 	return false;
 }
 
-bool KeyMgr::OnceKeyDown(int nKey)
+bool KeyMgr::OnceKeyDown(INT nKey)
 {
 	if (GetAsyncKeyState(nKey) & 0x8000)
 	{
@@ -37,7 +36,7 @@ bool KeyMgr::OnceKeyDown(int nKey)
 	return false;
 }
 
-bool KeyMgr::OnceKeyUp(int nKey)
+bool KeyMgr::OnceKeyUp(INT nKey)
 {
 	if (GetAsyncKeyState(nKey) & 0x8000)
 		m_bKeyUp[nKey] = true;
@@ -50,6 +49,15 @@ bool KeyMgr::OnceKeyUp(int nKey)
 			return true;
 		}
 	}
+
+	return false;
+}
+
+bool KeyMgr::IsToggleKey(INT nKey)
+{
+	//GetKeyState의 0x0001은 이전에 눌렸는지를 체크한다.
+	if (GetKeyState(nKey) & 0x0001)
+		return true;
 
 	return false;
 }
