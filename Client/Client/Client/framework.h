@@ -40,6 +40,7 @@ extern HWND g_hwnd;
 
 // struct
 typedef struct tagObject {
+	short id;
 	float x;
 	float y;
 	short ptX;

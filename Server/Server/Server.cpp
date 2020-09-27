@@ -7,10 +7,12 @@ using namespace std;
 
 #pragma comment(lib, "Ws2_32.lib")
 
-constexpr short PORT = 3500;
+constexpr int KEY_SERVER = 1000000; // 클라이언트 아이디와 헷갈리지 않게 큰 값으로
 
-int clientPtX = 0;
-int clientPtY = 0;
+short clientPtX = 0;
+short clientPtY = 0;
+
+int cur_playerCnt = 0;
 
 char send_buffer[MAX_BUFFER]= "";
 char recv_buffer[MAX_BUFFER] = "";
@@ -19,6 +21,19 @@ WSABUF send_wsabuf;
 WSABUF recv_wsabuf;
 
 SOCKET clientSocket;
+
+struct client_info {
+	client_info() {}
+	client_info(int _id, short _x, short _y, SOCKET _sock) {
+		id = _id; x = _x; y = _y; m_sock = _sock;
+	}
+	int id;
+	char name[MAX_ID_LEN];
+	short x, y;
+	SOCKET m_sock;
+};
+
+client_info g_clients[MAX_USER];
 
 void error_disp(const char* msg, int err_no);
 void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes);
@@ -35,10 +50,10 @@ int main()
 	SOCKADDR_IN serverAddress;
 	memset(&serverAddress, 0, sizeof(serverAddress));
 	serverAddress.sin_family = AF_INET;
-	serverAddress.sin_port = htons(PORT);
+	serverAddress.sin_port = htons(SERVER_PORT);
 	serverAddress.sin_addr.s_addr = INADDR_ANY;
 	::bind(serverSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
-	listen(serverSocket, 10);
+	listen(serverSocket, MAX_USER);
 
 	send_wsabuf.buf = send_buffer;
 	send_wsabuf.len = MAX_BUFFER;
@@ -49,16 +64,38 @@ int main()
 	WSAOVERLAPPED overlapped;
 
 	while (true) {
-		INT a_size = sizeof(clientAddress);
+		int a_size = sizeof(clientAddress);
 		clientSocket = accept(serverSocket, (sockaddr*)&clientAddress, &a_size);
 		if (SOCKET_ERROR == clientSocket)
 			error_disp("accept", WSAGetLastError());
-		cout << "New client accepted.\n";
-		recv_wsabuf.buf = recv_buffer;
-		recv_wsabuf.len = MAX_BUFFER;
-		DWORD flags = 0;
-		ZeroMemory(&overlapped, sizeof(overlapped));
-		int recvBytes = WSARecv(clientSocket, &recv_wsabuf, 1, NULL, &flags, &overlapped, recv_complete);
+		cout << "New client accepted. [" << cur_playerCnt << "]\n";
+		// 플레이어 배열에 새 플레이어 추가
+		client_info c_info= client_info{cur_playerCnt, clientPtX, clientPtY, clientSocket };
+		g_clients[cur_playerCnt++] = c_info;
+		// 접속한 플레이어에게 아이디, 초기 위치 부여 패킷 send
+		sc_packet_login_ok* loginPacket = reinterpret_cast<sc_packet_login_ok*>(send_buffer);
+		loginPacket->id = c_info.id;
+		loginPacket->x = c_info.x;
+		loginPacket->y = c_info.y;
+		loginPacket->size = sizeof(sc_packet_login_ok);
+		loginPacket->type = SC_LOGIN_OK;
+		send_wsabuf.len = sizeof(sc_packet_login_ok);
+		int ret = WSASend(clientSocket, &send_wsabuf, 1, NULL, NULL, &overlapped, send_complete);
+		if (ret) {
+			int error_code = WSAGetLastError();
+			printf("Error while sending packet [%d]", error_code);
+			system("pause");
+			exit(-1);
+		}
+		else {
+			cout << "Sent Type[" << SC_LOGIN_OK << "] Player's id[" << c_info.id << "]\n";
+		}
+
+		//recv_wsabuf.buf = recv_buffer;
+		//recv_wsabuf.len = MAX_BUFFER;
+		//DWORD flags = 0;
+		//ZeroMemory(&overlapped, sizeof(overlapped));
+		//int recvBytes = WSARecv(clientSocket, &recv_wsabuf, 1, NULL, &flags, &overlapped, recv_complete);
 	}
 	closesocket(serverSocket);
 	WSACleanup();
@@ -70,6 +107,7 @@ void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes) {
 	cs_packet_up* p = reinterpret_cast<cs_packet_up*>(packet);
 	int x = clientPtX;
 	int y = clientPtY;
+	int id = p->id;
 
 	switch (p->type) {
 	case CS_INPUTRIGHT:
@@ -97,6 +135,7 @@ void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes) {
 	movePacket->type = SC_MOVEPLAYER;
 	movePacket->x = clientPtX;
 	movePacket->y = clientPtY;
+	movePacket->id = id;
 
 	// 받은 만큼 다시 보내기
 	send_wsabuf.len = bytes;
@@ -109,7 +148,7 @@ void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes) {
 		exit(-1);
 	}
 	else {
-		cout << "Sent Type[" << SC_MOVEPLAYER << "] Player's X[" << clientPtX << "] Player's Y[" << clientPtY << "]\n";
+		cout << "Sent sc_packet_move_player : Player[" << id << "] 's X[" << clientPtX << "], Y[" << clientPtY << "]\n";
 	}
 }
 

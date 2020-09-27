@@ -85,9 +85,10 @@ void MainGame::InputKeyState()
 		x += 1;
 	}
 
-	// 이때 최초 한번 서버에 보냄.
+	// 이때 딱 한번 서버에 보냄.
 	cs_packet_up *myPacket = reinterpret_cast<cs_packet_up*>(send_buffer);
 	myPacket->size = sizeof(myPacket);
+	myPacket->id = player.id;
 	send_wsabuf.len = sizeof(myPacket);
 
 	if (0 != x) {
@@ -183,6 +184,8 @@ void MainGame::InitNetwork()
 	send_wsabuf.len = BUF_SIZE;
 	recv_wsabuf.buf = recv_buffer;
 	recv_wsabuf.len = BUF_SIZE;
+
+	ReadPacket();
 }
 
 void MainGame::ReadPacket()
@@ -196,13 +199,28 @@ void MainGame::ReadPacket()
 			int err_code = WSAGetLastError();
 			printf("Recv Error [%d]\n", err_code);
 		}
-//		cout << "Received " << num_recv << "Bytes [ " << recv_wsabuf.buf << "]\n";
-	//}
 		else {
+			//	cout << "Received " << num_recv << "Bytes [ " << recv_wsabuf.buf << "]\n";
 			BYTE* ptr = reinterpret_cast<BYTE*>(recv_wsabuf.buf);
 			int packet_size = ptr[0];
 			int packet_type = ptr[1];
-			if (packet_type == SC_MOVEPLAYER) {
+			switch (packet_type) {
+			case SC_LOGIN_OK:
+			{
+				int packet_id;
+				/*int*/short ptX, ptY; 
+				memcpy(&packet_id, &(ptr[2]), sizeof(int));
+				player.id = packet_id;
+				memcpy(&ptX, &(ptr[2]) + sizeof(int), sizeof(short)); //왜 int자료형에 short만큼 memcpy해쒀 바보야~~~~그러니까 안되지
+				player.ptX = ptX;
+				memcpy(&ptY, &(ptr[2]) + sizeof(int) + sizeof(short), sizeof(short));
+				player.ptY = ptY;
+				setObjectPoint();
+				setObjectRect();
+			}
+			break;
+			case SC_MOVEPLAYER:
+			{
 				int ptX = ptr[2];
 				int ptY = ptr[3];
 
@@ -212,7 +230,8 @@ void MainGame::ReadPacket()
 				setObjectRect();
 
 				cout << "Recv Type[" << SC_MOVEPLAYER << "] Player's X[" << ptX << "] Player's Y[" << ptY << "]\n";
-
+			}
+			break;
 			}
 		}
 }
