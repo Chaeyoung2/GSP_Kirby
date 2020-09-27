@@ -27,6 +27,15 @@ struct sc_packet_login_ok {
 	short x, y;
 };
 
+struct sc_packet_enter {
+	char size;
+	char type;
+	int id;
+	char name[MAX_ID_LEN];
+	char o_type;
+	short x, y;
+};
+
 struct cs_packet_up {
 	char size;
 	char type;
@@ -54,8 +63,8 @@ struct cs_packet_right {
 struct sc_packet_move_player {
 	char size;
 	char type;
-	char x, y;
 	int id;
+	short x, y;
 };
 
 #pragma pack(pop)
