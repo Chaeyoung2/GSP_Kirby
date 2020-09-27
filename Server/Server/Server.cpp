@@ -148,7 +148,7 @@ void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes) {
 		exit(-1);
 	}
 	else {
-		cout << "Sent sc_packet_move_player : Player[" << id << "] 's X[" << clientPtX << "], Y[" << clientPtY << "]\n";
+		cout << "Sent sc_packet_move_player : Player[" << id << "] 's X(" << clientPtX << "), Y(" << clientPtY << ")\n";
 	}
 }
 

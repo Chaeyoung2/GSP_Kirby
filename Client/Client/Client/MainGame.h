@@ -17,6 +17,10 @@ public:
 	void setObjectRect();
 public:
 	void LoadBitmaps();
+public:
+	OBJ* getPlayer() {
+		if (&player != nullptr) return &player;
+	}
 private:
 	HDC hdc;
 	HBITMAP hBitmapBackGround;
@@ -28,6 +32,13 @@ private:
 public:
 	void InitNetwork();
 	void ReadPacket();
+public:
+	const SOCKET* getServerSocket() {
+		if (&serverSocket != nullptr) return &serverSocket;
+	}
+	 WSABUF* getRecvWsabuf() {
+		if (&recv_wsabuf != nullptr) return &recv_wsabuf;
+	}
 private:
 	SOCKET serverSocket;
 	WSABUF send_wsabuf;
@@ -35,5 +46,6 @@ private:
 	char	packet_buffer[BUF_SIZE];
 	char 	send_buffer[BUF_SIZE];
 	char	recv_buffer[BUF_SIZE];
+	thread recvThread;
 };
 

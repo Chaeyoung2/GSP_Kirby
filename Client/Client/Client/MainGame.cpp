@@ -2,6 +2,59 @@
 #include "MainGame.h"
 #include "KeyMgr.h"
 
+void RecvPacket(LPVOID classPtr) {
+	MainGame* maingame = (MainGame*)classPtr;
+
+	DWORD num_recv;
+	DWORD flag = 0;
+
+	const SOCKET* serverSocket = maingame->getServerSocket();
+	WSABUF* recv_wsabuf = maingame->getRecvWsabuf();
+
+	while (true) {
+		int ret = WSARecv(*serverSocket, recv_wsabuf, 1, &num_recv, &flag, NULL, NULL);
+		if (ret) {
+			int err_code = WSAGetLastError();
+			printf("Recv Error [%d]\n", err_code);
+		}
+		else {
+			//	cout << "Received " << num_recv << "Bytes [ " << recv_wsabuf.buf << "]\n";
+			BYTE* ptr = reinterpret_cast<BYTE*>(recv_wsabuf->buf);
+			int packet_size = ptr[0];
+			int packet_type = ptr[1];
+			OBJ* pPlayer = maingame->getPlayer();
+			switch (packet_type) {
+			case SC_LOGIN_OK:
+			{
+				int packet_id;
+				/*int*/short ptX, ptY;
+				memcpy(&packet_id, &(ptr[2]), sizeof(int));
+				pPlayer->id = packet_id;
+				memcpy(&ptX, &(ptr[2]) + sizeof(int), sizeof(short)); //왜 int자료형에 short만큼 memcpy해쒀 바보야~~~~그러니까 안되지
+				pPlayer->ptX = ptX;
+				memcpy(&ptY, &(ptr[2]) + sizeof(int) + sizeof(short), sizeof(short));
+				pPlayer->ptY = ptY;
+				maingame->setObjectPoint();
+				maingame->setObjectRect();
+			}
+			break;
+			case SC_MOVEPLAYER:
+			{
+				int ptX = ptr[2];
+				int ptY = ptr[3];
+
+				pPlayer->ptX = ptX;
+				pPlayer->ptY = ptY;
+				maingame->setObjectPoint();
+				maingame->setObjectRect();
+
+				cout << "Recv Type[" << SC_MOVEPLAYER << "] Player's X[" << ptX << "] Player's Y[" << ptY << "]\n";
+			}
+			break;
+			}
+		}
+	}
+}
 
 MainGame::MainGame()
 {
@@ -101,7 +154,7 @@ void MainGame::InputKeyState()
 			int error_code = WSAGetLastError();
 			printf("Error while sending packet [%d]", error_code);
 		}
-		ReadPacket();
+		//ReadPacket();
 	}
 	if (0 != y) {
 		if (1 == y) myPacket->type = CS_INPUTDOWN;
@@ -113,7 +166,7 @@ void MainGame::InputKeyState()
 			int error_code = WSAGetLastError();
 			printf("Error while sending packet [%d]", error_code);
 		}
-		ReadPacket();
+		//ReadPacket();
 	}
 
 }
@@ -179,13 +232,14 @@ void MainGame::InitNetwork()
 		MessageBox(g_hwnd, L"WSAConnect", L"Failed", MB_OK);
 	}
 
-	// WSAAsyncSelect(serverSocket, g_hwnd, WM_SOCKET, FD_CLOSE | FD_READ); // 윈도우 메시지로도 안읽어와지네.. 왜지/..
+	//WSAAsyncSelect(serverSocket, g_hwnd, WM_SOCKET, FD_CLOSE | FD_READ); // 윈도우 메시지로도 안읽어와지네.. 왜지/..
 	send_wsabuf.buf = send_buffer;
 	send_wsabuf.len = BUF_SIZE;
 	recv_wsabuf.buf = recv_buffer;
 	recv_wsabuf.len = BUF_SIZE;
 
-	ReadPacket();
+	recvThread = thread{ RecvPacket, this };
+	// ReadPacket(); -> 별도 쓰레드에서 받기로
 }
 
 void MainGame::ReadPacket()
@@ -247,4 +301,6 @@ void MainGame::Release()
 	
 	closesocket(serverSocket);
 	WSACleanup();
+
+	recvThread.join();
 }
