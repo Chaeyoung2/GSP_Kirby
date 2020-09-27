@@ -13,25 +13,30 @@ public:
 	void Release();
 public:
 	void InputKeyState();
-	void setObjectPoint();
-	void setObjectRect();
+	void setObjectPoint(int id, float ptX, float ptY);
+	void setObjectRect(int id);
 public:
 	void LoadBitmaps();
 public:
-	OBJ* getPlayer() {
-		if (&player != nullptr) return &player;
+	OBJ* getPlayers() {
+		if (players != nullptr) return players;
+	}
+	void setMyid(int id) {
+		myid = id;
+	}
+	HBITMAP* getBitmaps() {
+		if (bitmaps != nullptr) return bitmaps;
 	}
 private:
 	HDC hdc;
-	HBITMAP hBitmapBackGround;
-	HBITMAP hBitmapBackBuffer;
+	HBITMAP bitmaps[3];
 	KeyMgr * pKeyMgr;
 private:
-	OBJ player;
+	int myid=-1;
+	OBJ players[MAX_USER] = {};
 /// ////////////////////////////////////////////////////////////
 public:
 	void InitNetwork();
-	void ReadPacket();
 public:
 	const SOCKET* getServerSocket() {
 		if (&serverSocket != nullptr) return &serverSocket;

@@ -16,37 +16,48 @@ void RecvPacket(LPVOID classPtr) {
 		if (ret) {
 			int err_code = WSAGetLastError();
 			printf("Recv Error [%d]\n", err_code);
+			break;
 		}
 		else {
 			//	cout << "Received " << num_recv << "Bytes [ " << recv_wsabuf.buf << "]\n";
 			BYTE* ptr = reinterpret_cast<BYTE*>(recv_wsabuf->buf);
 			int packet_size = ptr[0];
 			int packet_type = ptr[1];
-			OBJ* pPlayer = maingame->getPlayer();
+			OBJ* pPlayers = maingame->getPlayers();
 			switch (packet_type) {
 			case SC_LOGIN_OK:
 			{
 				int packet_id;
 				/*int*/short ptX, ptY;
 				memcpy(&packet_id, &(ptr[2]), sizeof(int));
-				pPlayer->id = packet_id;
+				maingame->setMyid(packet_id);
+				pPlayers[packet_id].id = packet_id;
 				memcpy(&ptX, &(ptr[2]) + sizeof(int), sizeof(short)); //왜 int자료형에 short만큼 memcpy해쒀 바보야~~~~그러니까 안되지
-				pPlayer->ptX = ptX;
+				pPlayers[packet_id].ptX = ptX;
 				memcpy(&ptY, &(ptr[2]) + sizeof(int) + sizeof(short), sizeof(short));
-				pPlayer->ptY = ptY;
-				maingame->setObjectPoint();
-				maingame->setObjectRect();
+				pPlayers[packet_id].ptY = ptY;
+				pPlayers[packet_id].connected = true; // 아이디 부여 받았으니까 커넥트 된것임!
+				HBITMAP* hBitmaps = maingame->getBitmaps();
+				pPlayers[packet_id].bitmap = hBitmaps[2]; // 이때 비트맵을 넣어주자
+				maingame->setObjectPoint(packet_id, (float)ptX, (float)ptY);
+				maingame->setObjectRect(packet_id);
 			}
 			break;
 			case SC_MOVEPLAYER:
 			{
-				int ptX = ptr[2];
-				int ptY = ptr[3];
+				float ptX = ptr[2];
+				float ptY = ptr[3];
+				int packet_id; memcpy(&packet_id, &(ptr[4]), sizeof(int));
 
-				pPlayer->ptX = ptX;
-				pPlayer->ptY = ptY;
-				maingame->setObjectPoint();
-				maingame->setObjectRect();
+				// 멀티 플레이어일 때는 배열에 접근해야 해
+				maingame->setObjectPoint(packet_id, ptX, ptY);
+				maingame->setObjectRect(packet_id);
+
+				// 싱글 플레이어일 때는 이렇게 해
+				//pPlayer->ptX = ptX;
+				//pPlayer->ptY = ptY;
+				//maingame->setObjectPoint();
+				//maingame->setObjectRect();
 
 				cout << "Recv Type[" << SC_MOVEPLAYER << "] Player's X[" << ptX << "] Player's Y[" << ptY << "]\n";
 			}
@@ -62,6 +73,7 @@ MainGame::MainGame()
 
 MainGame::~MainGame()
 {
+	Release();
 }
 
 void MainGame::Start()
@@ -69,8 +81,8 @@ void MainGame::Start()
 	hdc = GetDC(g_hwnd);
 	LoadBitmaps();
 
-	setObjectPoint();
-	setObjectRect();
+	setObjectPoint(0, 0, 0);
+	setObjectRect(0);
 
 	InitNetwork();
 
@@ -89,9 +101,9 @@ void MainGame::Render()
 	HDC hdcBackGround = CreateCompatibleDC(hdcMain);
 	HDC hdcPlayer = CreateCompatibleDC(hdcMain);
 
-	SelectObject(hdcBuffer, hBitmapBackBuffer);
-	SelectObject(hdcBackGround, hBitmapBackGround);
-	SelectObject(hdcPlayer, player.bitmap);
+	SelectObject(hdcBuffer, bitmaps[0]);
+	SelectObject(hdcBackGround, bitmaps[1]);
+	SelectObject(hdcPlayer, players[myid].bitmap);
 
 	// render BackGround at BackBuffer
 	BitBlt(hdcBuffer, 0, 0, WINCX, WINCY, hdcBackGround, 0, 0, SRCCOPY);
@@ -104,7 +116,7 @@ void MainGame::Render()
 	}
 	// render Player
 	TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-		player.rect.left, player.rect.top, /// 이미지를 출력할 위치 x,y
+		players[myid].rect.left, players[myid].rect.top, /// 이미지를 출력할 위치 x,y
 		PLAYERCX, PLAYERCY, /// 출력할 이미지의 너비, 높이
 		hdcPlayer, /// 이미지 핸들
 		0, 0, /// 가져올 이미지의 시작지점 x,y 
@@ -141,7 +153,7 @@ void MainGame::InputKeyState()
 	// 이때 딱 한번 서버에 보냄.
 	cs_packet_up *myPacket = reinterpret_cast<cs_packet_up*>(send_buffer);
 	myPacket->size = sizeof(myPacket);
-	myPacket->id = player.id;
+	myPacket->id = players[myid].id;
 	send_wsabuf.len = sizeof(myPacket);
 
 	if (0 != x) {
@@ -171,20 +183,28 @@ void MainGame::InputKeyState()
 
 }
 
-void MainGame::setObjectPoint()
+void MainGame::setObjectPoint(int id, float ptX, float ptY)
 {
-	// 체스판에 맞게 // point에 따라서 위치 설정
-	player.x = player.ptX * TILESIZE + TILESIZE * 0.5f;
-	player.y = player.ptY * TILESIZE + TILESIZE * 0.5f;
+	// 이젠 멀티플레이어니까 배열에 접근 !
+	players[id].x = ptX * TILESIZE + TILESIZE * 0.5f;
+	players[id].y = ptY * TILESIZE + TILESIZE * 0.5f;
+	//// 체스판에 맞게 // point에 따라서 위치 설정
+	//player.x = player.ptX * TILESIZE + TILESIZE * 0.5f;
+	//player.y = player.ptY * TILESIZE + TILESIZE * 0.5f;
 }
 
-void MainGame::setObjectRect()
+void MainGame::setObjectRect(int id)
 {
-	// rect 설정해 두면 TranasparentBlt 할 때 유용함
-	player.rect.left = long(player.x - PLAYERCX * 0.5f);
-	player.rect.right = long(player.x + PLAYERCX * 0.5f);
-	player.rect.top = long(player.y - PLAYERCY * 0.5f);
-	player.rect.bottom = long(player.y + PLAYERCY * 0.5f);
+	// 이젠 멀티플레이어니까 배열에 접근 !
+	players[id].rect.left = long(players[id].x - PLAYERCX * 0.5f);
+	players[id].rect.right = long(players[id].x + PLAYERCX * 0.5f);
+	players[id].rect.top = long(players[id].y - PLAYERCY * 0.5f);
+	players[id].rect.bottom = long(players[id].y + PLAYERCY * 0.5f);
+	//// rect 설정해 두면 TranasparentBlt 할 때 유용함
+	//player.rect.left = long(player.x - PLAYERCX * 0.5f);
+	//player.rect.right = long(player.x + PLAYERCX * 0.5f);
+	//player.rect.top = long(player.y - PLAYERCY * 0.5f);
+	//player.rect.bottom = long(player.y + PLAYERCY * 0.5f);
 }
 
 
@@ -197,7 +217,7 @@ void MainGame::LoadBitmaps()
 		return;
 	}
 	else
-		hBitmapBackBuffer = tempBitmap;
+		bitmaps[0] = tempBitmap;
 
 	// BackGround
 	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/BackGround.bmp", IMAGE_BITMAP, WINCX, WINCY, LR_LOADFROMFILE | LR_CREATEDIBSECTION); // 비트맵 로드 방법2
@@ -206,7 +226,7 @@ void MainGame::LoadBitmaps()
 		return;
 	}
 	else
-		hBitmapBackGround = tempBitmap;
+		bitmaps[1] = tempBitmap;
 
 	// Player
 	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/Kirby.bmp", IMAGE_BITMAP, 150, 90, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
@@ -215,7 +235,7 @@ void MainGame::LoadBitmaps()
 		return;
 	}
 	else
-		player.bitmap = tempBitmap;
+		bitmaps[2] = tempBitmap;
 }
 
 void MainGame::InitNetwork()
@@ -242,60 +262,12 @@ void MainGame::InitNetwork()
 	// ReadPacket(); -> 별도 쓰레드에서 받기로
 }
 
-void MainGame::ReadPacket()
-{
-	DWORD num_recv;
-	DWORD flag = 0;
-
-	//while (true) {
-		int ret = WSARecv(serverSocket, &recv_wsabuf, 1, &num_recv, &flag, NULL, NULL);
-		if (ret) {
-			int err_code = WSAGetLastError();
-			printf("Recv Error [%d]\n", err_code);
-		}
-		else {
-			//	cout << "Received " << num_recv << "Bytes [ " << recv_wsabuf.buf << "]\n";
-			BYTE* ptr = reinterpret_cast<BYTE*>(recv_wsabuf.buf);
-			int packet_size = ptr[0];
-			int packet_type = ptr[1];
-			switch (packet_type) {
-			case SC_LOGIN_OK:
-			{
-				int packet_id;
-				/*int*/short ptX, ptY; 
-				memcpy(&packet_id, &(ptr[2]), sizeof(int));
-				player.id = packet_id;
-				memcpy(&ptX, &(ptr[2]) + sizeof(int), sizeof(short)); //왜 int자료형에 short만큼 memcpy해쒀 바보야~~~~그러니까 안되지
-				player.ptX = ptX;
-				memcpy(&ptY, &(ptr[2]) + sizeof(int) + sizeof(short), sizeof(short));
-				player.ptY = ptY;
-				setObjectPoint();
-				setObjectRect();
-			}
-			break;
-			case SC_MOVEPLAYER:
-			{
-				int ptX = ptr[2];
-				int ptY = ptr[3];
-
-				player.ptX = ptX;
-				player.ptY = ptY;
-				setObjectPoint();
-				setObjectRect();
-
-				cout << "Recv Type[" << SC_MOVEPLAYER << "] Player's X[" << ptX << "] Player's Y[" << ptY << "]\n";
-			}
-			break;
-			}
-		}
-}
-
 
 void MainGame::Release()
 {
-	DeleteObject(hBitmapBackGround);
-	DeleteObject(hBitmapBackBuffer);
-	DeleteObject(player.bitmap);
+	DeleteObject(bitmaps[0]);
+	DeleteObject(bitmaps[1]);
+	DeleteObject(bitmaps[2]);
 
 	delete pKeyMgr;
 	

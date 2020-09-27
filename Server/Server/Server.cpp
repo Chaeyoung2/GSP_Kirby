@@ -31,6 +31,7 @@ struct client_info {
 	char name[MAX_ID_LEN];
 	short x, y;
 	SOCKET m_sock;
+	bool connected;
 };
 
 client_info g_clients[MAX_USER];
@@ -88,7 +89,25 @@ int main()
 			exit(-1);
 		}
 		else {
-			cout << "Sent Type[" << SC_LOGIN_OK << "] Player's id[" << c_info.id << "]\n";
+			cout << "Sent sc_packet_login_ok players[" << SC_LOGIN_OK << "]'s id[" << c_info.id << "]\n";
+		}
+		// 접속한 플레이어에게 다른 플레이어 정보 send
+		sc_packet_login_ok* loginPacket = reinterpret_cast<sc_packet_login_ok*>(send_buffer);
+		loginPacket->id = c_info.id;
+		loginPacket->x = c_info.x;
+		loginPacket->y = c_info.y;
+		loginPacket->size = sizeof(sc_packet_login_ok);
+		loginPacket->type = SC_LOGIN_OK;
+		send_wsabuf.len = sizeof(sc_packet_login_ok);
+		int ret = WSASend(clientSocket, &send_wsabuf, 1, NULL, NULL, &overlapped, send_complete);
+		if (ret) {
+			int error_code = WSAGetLastError();
+			printf("Error while sending packet [%d]", error_code);
+			system("pause");
+			exit(-1);
+		}
+		else {
+			cout << "Sent sc_packet_login_ok players[" << SC_LOGIN_OK << "]'s id[" << c_info.id << "]\n";
 		}
 
 		//recv_wsabuf.buf = recv_buffer;

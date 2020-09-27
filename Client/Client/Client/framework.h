@@ -40,7 +40,8 @@ extern HWND g_hwnd;
 
 // struct
 typedef struct tagObject {
-	short id;
+	int id = -1;
+	bool connected = false;
 	float x;
 	float y;
 	short ptX;
