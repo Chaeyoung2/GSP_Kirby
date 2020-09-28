@@ -61,7 +61,12 @@ int main()
 		SOCKET clientSocket = accept(serverSocket, (sockaddr*)&clientAddress, &a_size);
 		if (SOCKET_ERROR == clientSocket)
 			error_disp("accept", WSAGetLastError());
-		cout << "New client accepted. [" << cur_playerCnt << "]\n";
+		if (cur_playerCnt == MAX_USER) {
+			cout << "클라이언트 자리 꽉 찼음! 현재 플레이어 수 : " << cur_playerCnt << endl;
+			continue;
+		}
+		else
+			cout << "New client accepted. [" << cur_playerCnt << "]\n";
 		// 플레이어 배열에 새 플레이어 추가
 		client_info c_info= client_info{cur_playerCnt, 3, 0, clientSocket, true };
 		c_info.overlapped.hEvent = (HANDLE)clientSocket; // 여기서 소켓 정보를 미리 받아놓고 나중에 recvCallback에서 사용할 것임
@@ -122,7 +127,7 @@ int main()
 				exit(-1);
 			}
 			else {
-				cout << "Sent sc_packet_enter To players[" << i << "], this packet's id is " << c_info.id << "]\n";
+				cout << "Send sc_packet_enter To players[" << i << "], enter client's id is " << c_info.id << "]\n";
 			}
 		}
 		// 접속한 플레이어에게 다른 플레이어 정보 send
@@ -147,7 +152,7 @@ int main()
 				exit(-1);
 			}
 			else {
-				cout << "Sent sc_packet_enter To players[" << c_info.id << "], this packet's id is " << i << "]\n";
+				cout << "Send sc_packet_enter To players[" << c_info.id << "], enter client's id is " << i << "]\n";
 			}
 		}
 
@@ -209,7 +214,7 @@ void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes) {
 			exit(-1);
 		}
 		else {
-			cout << "Sent sc_packet_move_player : Player[" << id << "] 's X(" << g_clients[id].x << "), Y(" << g_clients[id].y << ")\n";
+			cout << "Send sc_packet_move_player To Player[" << i << "], move client[" << id << "]'s X(" << g_clients[id].x << "), Y(" << g_clients[id].y << ")\n";
 		}
 	}
 }
