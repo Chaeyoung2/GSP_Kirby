@@ -1,6 +1,5 @@
 #include "framework.h"
 #include "MainGame.h"
-#include "KeyMgr.h"
 
 void RecvPacket(LPVOID classPtr) {
 	MainGame* maingame = (MainGame*)classPtr;
@@ -128,12 +127,11 @@ void MainGame::Start()
 
 	InitNetwork();
 
-	pKeyMgr = new KeyMgr;
 }
 
 void MainGame::Update()
 {
-	InputKeyState();
+	//InputKeyState();
 }
 
 void MainGame::Render()
@@ -179,20 +177,30 @@ void MainGame::Render()
 }
 
 
-void MainGame::InputKeyState()
+void MainGame::InputKeyState(int key)
 {
 	int x = 0, y = 0;
-	if (pKeyMgr->OnceKeyUp(VK_UP)) {
-		y -= 1;
-	}
-	else if (pKeyMgr->OnceKeyUp(VK_DOWN)) {
-		y += 1;
-	}
-	else if (pKeyMgr->OnceKeyUp(VK_LEFT)) {
-		x -= 1;
-	}
-	else if (pKeyMgr->OnceKeyUp(VK_RIGHT)) {
-		x += 1;
+
+	// -> 다수 클라에서 중복 입력이 됨.. 버리자!
+	//if (pKeyMgr->OnceKeyUp(VK_UP)) {
+	//	y -= 1;
+	//}
+	//else if (pKeyMgr->OnceKeyUp(VK_DOWN)) {
+	//	y += 1;
+	//}
+	//else if (pKeyMgr->OnceKeyUp(VK_LEFT)) {
+	//	x -= 1;
+	//}
+	//else if (pKeyMgr->OnceKeyUp(VK_RIGHT)) {
+	//	x += 1;
+	//}
+
+	// 0: up, 1:down, 2:left, 3:right
+	switch (key) {
+	case 0: y -= 1; break;
+	case 1: y += 1; break;
+	case 2: x -= 1; break;
+	case 3: x += 1; break;
 	}
 
 	// 이때 딱 한번 서버에 보냄.
@@ -316,7 +324,6 @@ void MainGame::Release()
 	DeleteObject(bitmaps[1]);
 	DeleteObject(bitmaps[2]);
 
-	delete pKeyMgr;
 	
 	closesocket(serverSocket);
 	WSACleanup();

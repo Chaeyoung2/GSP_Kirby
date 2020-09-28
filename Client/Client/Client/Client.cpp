@@ -195,6 +195,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
+    case WM_KEYDOWN:
+    {
+        switch (wParam) {
+        case VK_UP:
+            mainGame.InputKeyState(0);
+            break;
+        case VK_DOWN:
+            mainGame.InputKeyState(1);
+            break;
+        case VK_LEFT:
+            mainGame.InputKeyState(2);
+            break;
+        case VK_RIGHT:
+            mainGame.InputKeyState(3);
+            break;
+        }
+    }
+        break;
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
     }

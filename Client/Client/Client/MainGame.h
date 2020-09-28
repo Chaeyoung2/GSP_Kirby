@@ -12,7 +12,7 @@ public:
 	void Render();
 	void Release();
 public:
-	void InputKeyState();
+	void InputKeyState(int key);
 	void setObjectPoint(int id, float ptX, float ptY);
 	void setObjectRect(int id);
 public:
@@ -30,7 +30,6 @@ public:
 private:
 	HDC hdc;
 	HBITMAP bitmaps[3];
-	KeyMgr * pKeyMgr;
 private:
 	int myid=-1;
 	OBJ players[MAX_USER] = {};
