@@ -17,6 +17,8 @@
 #include <iostream>
 #include <WS2tcpip.h>
 #include <thread>
+#include <wchar.h>
+#include <mutex>
 // 자체 헤더 파일
 #include "../../../Server/Server/protocol.h"
 using namespace std;
@@ -25,18 +27,21 @@ using namespace std;
 #pragma comment(lib, "msimg32.lib")
 #pragma comment(lib, "WS2_32.LIB")
 #pragma warning(disable:4996)
+#pragma warning(disable:4703)
 
 // define
-#define WINCX 800
-#define WINCY 800
+#define WINCX 770
+#define WINCY 770
 #define PLAYERCX 50
 #define PLAYERCY 50
-#define TILESIZE 100
+#define TILESIZE 70
 #define WM_SOCKET (WM_USER+1)
 #define SERVER_IP "127.0.0.1"
 
 // extern
 extern HWND g_hwnd;
+extern int g_scrollX;
+extern int g_scrollY;
 
 // struct
 typedef struct tagObject {
@@ -46,6 +51,7 @@ typedef struct tagObject {
 	float y;
 	short ptX;
 	short ptY;
+	char *name;
 	RECT rect;
 	HBITMAP bitmap;
 }OBJ;
@@ -53,5 +59,6 @@ typedef struct tagObject {
 // const
 constexpr int BUF_SIZE = 1024;
 constexpr short PORT = 3500;
+
 
 

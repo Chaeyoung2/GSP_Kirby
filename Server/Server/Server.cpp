@@ -1,16 +1,34 @@
 #include <iostream>
 #include <WS2tcpip.h>
+#include <MSWSock.h>
 #include <stdlib.h>
+#include <thread>
+#include <vector>
+#include <mutex>
+#include <unordered_set>
 #include "protocol.h"
 
 using namespace std;
 
 #pragma comment(lib, "Ws2_32.lib")
+#pragma comment(lib, "MSWSock.lib")
 
 constexpr int KEY_SERVER = 1000000; // 클라이언트 아이디와 헷갈리지 않게 큰 값으로
 
+constexpr char OP_MODE_RECV = 0;
+constexpr char OP_MODE_SEND = 1;
+constexpr char OP_MODE_ACCEPT = 2;
+
+constexpr int VIEW_LIMIT = 3;
+
 int cur_playerCnt = 0;
 
+struct OVER_EX {
+	WSAOVERLAPPED wsa_over;
+	char op_mode;
+	WSABUF wsa_buf;
+	unsigned char iocp_buf[MAX_BUFFER];
+};
 
 
 struct client_info {
@@ -18,247 +36,497 @@ struct client_info {
 	client_info(int _id, short _x, short _y, SOCKET _sock, bool _connected) {
 		id = _id; x = _x; y = _y; sock = _sock; connected = _connected;
 	}
-	WSAOVERLAPPED overlapped;
+	OVER_EX m_recv_over;
+	mutex c_lock;
 	int id;
 	char name[MAX_ID_LEN];
 	short x, y;
 	SOCKET sock;
 	bool connected = false;
 	char oType;
-	WSABUF send_wsabuf;
-	WSABUF recv_wsabuf;
-	char send_buffer[MAX_BUFFER] = "";
-	char recv_buffer[MAX_BUFFER] = "";
+	unsigned char* m_packet_start;
+	unsigned char* m_recv_start;
+	mutex vl;
+	unordered_set<int> view_list;
 };
 
+mutex id_lock;//아이디를 넣어줄때 상호배제해줄 락킹
 client_info g_clients[MAX_USER];
+HANDLE h_iocp;
+SOCKET g_listenSocket;
+OVER_EX g_accept_over; // accept용 overlapped 구조체
 
-void error_disp(const char* msg, int err_no);
-void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes);
+void error_display(const char* msg, int err_no);
+void ProcessPacket(int id);
+void ProcessRecv(int id, DWORD iosize);
+void ProcessMove(int id, char dir);
+void WorkerThread();
+void AddNewClient(SOCKET ns);
+void DisconnectClient(int id);
+void SendPacket(int id, void* p);
+void SendLeavePacket(int to_id, int id);
+void SendLoginOK(int id);
+void SendEnterPacket(int to_id, int new_id);
+void SendMovePacket(int to_id, int id);
+bool IsNear(int p1, int p2);
 
-void CALLBACK recv_complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags);
-void CALLBACK send_complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags);
 
 int main()
 {
+	for (auto& cl : g_clients) {
+		cl.connected = false;
+	}
+
 	wcout.imbue(std::locale("korean"));
 	WSADATA WSAdata;
 	WSAStartup(MAKEWORD(2, 0), &WSAdata);
-	SOCKET serverSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	h_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
+	g_listenSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	CreateIoCompletionPort(reinterpret_cast<HANDLE>(g_listenSocket), h_iocp, KEY_SERVER, 0); // iocp에 리슨 소켓 등록
+
 	SOCKADDR_IN serverAddress;
 	memset(&serverAddress, 0, sizeof(serverAddress));
 	serverAddress.sin_family = AF_INET;
 	serverAddress.sin_port = htons(SERVER_PORT);
 	serverAddress.sin_addr.s_addr = INADDR_ANY;
-	::bind(serverSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
-	listen(serverSocket, MAX_USER);
+	::bind(g_listenSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
+	listen(g_listenSocket, MAX_USER);
 
+	// Accept
+	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	g_accept_over.op_mode = OP_MODE_ACCEPT;
+	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
+	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));
+	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, NULL, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
 
-	SOCKADDR_IN clientAddress;
-
-	while (true) {
-		int a_size = sizeof(clientAddress);
-		SOCKET clientSocket = accept(serverSocket, (sockaddr*)&clientAddress, &a_size);
-		if (SOCKET_ERROR == clientSocket)
-			error_disp("accept", WSAGetLastError());
-		if (cur_playerCnt == MAX_USER) {
-			cout << "클라이언트 자리 꽉 찼음! 현재 플레이어 수 : " << cur_playerCnt << endl;
-			continue;
-		}
-		else
-			cout << "New client accepted. [" << cur_playerCnt << "]\n";
-		// 플레이어 배열에 새 플레이어 추가
-		client_info c_info= client_info{cur_playerCnt, 3, 0, clientSocket, true };
-		c_info.overlapped.hEvent = (HANDLE)clientSocket; // 여기서 소켓 정보를 미리 받아놓고 나중에 recvCallback에서 사용할 것임
-		g_clients[cur_playerCnt++] = c_info;
-		// 접속한 플레이어에게 아이디, 초기 위치 부여 패킷 send + 최초 recv
-		sc_packet_login_ok* loginPacket = reinterpret_cast<sc_packet_login_ok*>(g_clients[c_info.id].send_buffer);
-		loginPacket->id = c_info.id;
-		loginPacket->x = c_info.x;
-		loginPacket->y = c_info.y;
-		loginPacket->size = sizeof(sc_packet_login_ok);
-		loginPacket->type = SC_LOGIN_OK;
-		g_clients[c_info.id].send_wsabuf.buf = g_clients[c_info.id].send_buffer;
-		g_clients[c_info.id].send_wsabuf.len = sizeof(sc_packet_login_ok);
-		ZeroMemory(&(g_clients[c_info.id].overlapped), sizeof(WSAOVERLAPPED));
-		int ret = WSASend(g_clients[c_info.id].sock, &(g_clients[c_info.id].send_wsabuf), 1, NULL, NULL, &(g_clients[c_info.id].overlapped), send_complete);
-		if (ret) {
-			int error_code = WSAGetLastError();
-			printf("Error while sending packet [%d]", error_code);
-			system("pause");
-			exit(-1);
-		}
-		else {
-			cout << "Sent sc_packet_login_ok To players[" << c_info.id << "]\n";
-		}
-		DWORD flags = 0;
-		g_clients[c_info.id].recv_wsabuf.buf = g_clients[c_info.id].recv_buffer;
-		g_clients[c_info.id].recv_wsabuf.len = MAX_BUFFER;
-		ret = WSARecv(g_clients[c_info.id].sock, &(g_clients[c_info.id].recv_wsabuf), 1, NULL, &flags, &(g_clients[c_info.id].overlapped), recv_complete);
-		if (ret) {
-			int error_code = WSAGetLastError();
-			if (error_code != 997)
-				printf("Error while receving packet [%d]", error_code);
-			//system("pause");
-			//exit(-1);
-		}
-		else {
-			cout << "Recv players[" << c_info.id << "]\n";
-		}
-		//다른 플레이어에게 접속한 플레이어 정보 send 
-		for (int i = 0; i < MAX_USER; ++i) {
-			if (g_clients[i].connected == false) continue;
-			if (i == c_info.id) continue;
-			sc_packet_enter* enterPacket = reinterpret_cast<sc_packet_enter*>(g_clients[i].send_buffer);
-			enterPacket->size = sizeof(sc_packet_enter);
-			enterPacket->id = g_clients[c_info.id].id;
-			memcpy(&(enterPacket->name), &(g_clients[c_info.id].name), strlen(g_clients[c_info.id].name));
-			enterPacket->o_type = g_clients[c_info.id].oType;
-			enterPacket->type = SC_ENTER;
-			enterPacket->x = g_clients[c_info.id].x;
-			enterPacket->y = g_clients[c_info.id].y;
-
-			g_clients[i].send_wsabuf.len = sizeof(sc_packet_enter);
-			int ret = WSASend(g_clients[i].sock, &(g_clients[i].send_wsabuf), 1, NULL, NULL, &(g_clients[i].overlapped), send_complete);
-			if (ret) {
-				int error_code = WSAGetLastError();
-				printf("Error while sending packet [%d]\n", error_code);
-				system("pause");
-				exit(-1);
-			}
-			else {
-				cout << "Send sc_packet_enter To players[" << i << "], enter client's id is " << c_info.id << "]\n";
-			}
-		}
-		// 접속한 플레이어에게 다른 플레이어 정보 send
-		for (int i = 0; i < MAX_USER; ++i) {
-			if (g_clients[i].connected == false) continue;
-			if (i == c_info.id) continue;
-			sc_packet_enter* enterPacket = reinterpret_cast<sc_packet_enter*>(g_clients[c_info.id].send_buffer);
-			enterPacket->size = sizeof(sc_packet_enter);
-			enterPacket->id = g_clients[i].id;
-			memcpy(&(enterPacket->name), &(g_clients[i].name), strlen(g_clients[i].name));
-			enterPacket->o_type = g_clients[i].oType;
-			enterPacket->type = SC_ENTER;
-			enterPacket->x = g_clients[i].x;
-			enterPacket->y = g_clients[i].y;
-
-			g_clients[c_info.id].send_wsabuf.len = sizeof(sc_packet_enter);
-			int ret = WSASend(g_clients[c_info.id].sock, &(g_clients[c_info.id].send_wsabuf), 1, NULL, NULL, &(g_clients[c_info.id].overlapped), send_complete);
-			if (ret) {
-				int error_code = WSAGetLastError();
-				printf("Error while sending packet [%d]", error_code);
-				system("pause");
-				exit(-1);
-			}
-			else {
-				cout << "Send sc_packet_enter To players[" << c_info.id << "], enter client's id is " << i << "]\n";
-			}
-		}
-
-		g_clients[c_info.id].recv_wsabuf.buf = g_clients[c_info.id].recv_buffer;
-		g_clients[c_info.id].recv_wsabuf.len = MAX_BUFFER;
-		flags = 0;
-		int recvBytes = WSARecv(clientSocket, &(g_clients[c_info.id].recv_wsabuf), 1, NULL, &flags, &(g_clients[c_info.id].overlapped), recv_complete);
+	vector <thread> workerthreads;
+	for (int i = 0; i < 6; ++i) {
+		workerthreads.emplace_back(WorkerThread);
 	}
-	closesocket(serverSocket);
-	WSACleanup();
+	for (auto& t : workerthreads)
+		t.join();
 
+	closesocket(g_listenSocket);
+	WSACleanup();
+	
+	return 0;
+}
+
+
+void ProcessPacket(int id)
+{
+	char p_type = g_clients[id].m_packet_start[1]; // 패킷 타입
+	switch (p_type) {
+	case CS_LOGIN:
+	{
+		cs_packet_login* p = reinterpret_cast<cs_packet_login*>(g_clients[id].m_packet_start);
+		g_clients[id].c_lock.lock();
+		strcpy_s(g_clients[id].name, p->name);
+		g_clients[id].c_lock.unlock();
+		SendLoginOK(id);
+		for (int i = 0; i < MAX_USER; ++i) {
+			if (false == g_clients[i].connected) continue;
+			if (id == i) continue;
+			if (false == IsNear(i, id)) continue;
+			if (0 == g_clients[i].view_list.count(id)) {
+				g_clients[i].view_list.insert(id);
+				SendEnterPacket(i, id);
+			}
+			if (0 == g_clients[id].view_list.count(i)) {
+				g_clients[id].view_list.insert(i);
+				SendEnterPacket(id, i);
+			}
+		}
+	}
+	break;
+	case CS_MOVE:
+	{
+		cs_packet_move* p = reinterpret_cast<cs_packet_move*>(g_clients[id].m_packet_start);
+		ProcessMove(id, p->direction);
+	}
+	break;
+	default:
+	{
+		cout << "Unkown Packet type[" << p_type << "] from Client [" << id << "]\n";
+		while (true);
+	}
+	break;
+	}
 
 }
 
-void ProcessPacket(char* packet, LPWSAOVERLAPPED over, DWORD bytes) {
-	cs_packet_up* p = reinterpret_cast<cs_packet_up*>(packet);
-	int id = p->id;
-	int x = g_clients[id].x;
-	int y = g_clients[id].y;
+void ProcessRecv(int id, DWORD iosize)
+{
+	// 패킷 조립.
+	unsigned char p_size = g_clients[id].m_packet_start[0]; // 패킷 사이즈
+	unsigned char* next_recv_ptr = g_clients[id].m_recv_start + iosize; // 다음에 받을 ptr
+	while (p_size <= next_recv_ptr - g_clients[id].m_packet_start) { // 조립
+		ProcessPacket(id); // 패킷 처리
+		g_clients[id].m_packet_start += p_size; // 패킷 처리했으니 다음 패킷 주소로
+		if (g_clients[id].m_packet_start < next_recv_ptr)
+			p_size = g_clients[id].m_packet_start[0]; // 다음 패킷의 사이즈를 p_size로 업데이트
+		else
+			break;
+	}
+	// 패킷 조립하고 이만큼 남았음.
+	int left_data = next_recv_ptr - g_clients[id].m_packet_start;
+	// 버퍼를 다 썼으면 초기화해야 함. (앞으로 밀어버린다)
+	if ((MAX_BUFFER - (next_recv_ptr - g_clients[id].m_recv_over.iocp_buf) < MIN_BUFFER)) { // 버퍼가 MIN_BUFFER 크기보다 작으면
+		memcpy(g_clients[id].m_recv_over.iocp_buf, g_clients[id].m_packet_start, left_data); // 남아 있는 바이트만큼 copy 
+		g_clients[id].m_packet_start = g_clients[id].m_recv_over.iocp_buf; 
+		next_recv_ptr = g_clients[id].m_recv_start + left_data; // 다음에 받을 위치 가리킴
+	}
+	DWORD recv_flag = 0;
 
-	switch (p->type) {
-	case CS_INPUTRIGHT:
-		if (x < TILEMAX)
-			x++;
+	// 어디서부터 다시 받을지
+	g_clients[id].m_recv_start = next_recv_ptr;
+	g_clients[id].m_recv_over.wsa_buf.buf = reinterpret_cast<CHAR*>(next_recv_ptr);
+	g_clients[id].m_recv_over.wsa_buf.len = MAX_BUFFER - (next_recv_ptr - g_clients[id].m_recv_over.iocp_buf); // 남아 있는 버퍼 용량
+	g_clients[id].c_lock.lock();
+	if (true == g_clients[id].connected)
+		WSARecv(g_clients[id].sock, &g_clients[id].m_recv_over.wsa_buf, 1, NULL, &recv_flag, &g_clients[id].m_recv_over.wsa_over, NULL);
+	g_clients[id].c_lock.unlock();
+}
+
+void ProcessMove(int id, char dir)
+{
+	short y = g_clients[id].y;
+	short x = g_clients[id].x;
+
+	switch (dir) {
+	case MV_UP:
+		if (y > 0) y--;
 		break;
-	case CS_INPUTLEFT:
-		if (x > 0)
-			x--;
+	case MV_DOWN:
+		if (y < WORLD_HEIGHT - 1) y++;
 		break;
-	case CS_INPUTUP:
-		if (y > 0)
-			y--;
+	case MV_LEFT:
+		if (x > 0) x--;
 		break;
-	case CS_INPUTDOWN:
-		if (y < TILEMAX)
-			y++;
+	case MV_RIGHT:
+		if (x < WORLD_WIDTH - 1) x++;
+		break;
+	default:
+		cout << "Unknown Direction in CS_MOVE packet\n";
+		while (true);
 		break;
 	}
+
+	// 이동 전 뷰 리스트
+	unordered_set<int> old_viewlist = g_clients[id].view_list; 
+
 	g_clients[id].x = x;
 	g_clients[id].y = y;
 
+	// 나에게 알림
+	SendMovePacket(id, id);
 
-	// 움직인 플레이어 정보 보내기 (나를 포함한 모든 플레이어들에게)
+	// a
+	//for (int i = 0; i < MAX_USER; ++i) {
+	//	if (false == g_clients[i].in_use) continue;
+	//	if (i == id) continue;
+	//	SendMovePacket(i, id);
+	//}
+	// ----------------------- 시야 처리 구현하면 주석 해제할 것.. 위에 a 코드 지워도 됨
+
+	// 뷰 리스트 처리
+	//// 이동 후 객체-객체가 서로 보이나 안 보이나 처리
+	unordered_set<int> new_viewlist;
 	for (int i = 0; i < MAX_USER; ++i) {
-		if (g_clients[i].connected == false) continue;
-		sc_packet_move_player* movePacket = reinterpret_cast<sc_packet_move_player*>(g_clients[i].send_buffer);
-		movePacket->size = sizeof(sc_packet_move_player);
-		movePacket->type = SC_MOVEPLAYER;
-		movePacket->x = g_clients[id].x;
-		movePacket->y = g_clients[id].y;
-		movePacket->id = id;
-		g_clients[i].send_wsabuf.len = sizeof(sc_packet_move_player);
-		ZeroMemory(&(g_clients[i].overlapped), sizeof(g_clients[i].overlapped));
-		int ret = WSASend(g_clients[i].sock, &(g_clients[i].send_wsabuf), 1, NULL, NULL, &(g_clients[i].overlapped), send_complete);
-		if (ret) {
-			int error_code = WSAGetLastError();
-			printf("Error while sending packet [%d]", error_code);
-			system("pause");
-			exit(-1);
+		if (id == i) continue;
+		if (false == g_clients[i].connected) continue;
+		if (true == IsNear(id, i)) { // i가 id와 가깝다면
+			new_viewlist.insert(i); // 뉴 뷰리스트에 i를 넣는다
+		}
+	}
+	// 시야 처리 (2차 시도)-----------------------------------
+	// 1. old vl에 있고 new vl에도 있는 객체 // 서로가 
+	for (auto pl : old_viewlist) {
+		if (0 == new_viewlist.count(pl)) continue;
+		if (0 < g_clients[pl].view_list.count(id)) {
+			SendMovePacket(pl, id);
 		}
 		else {
-			cout << "Send sc_packet_move_player To Player[" << i << "], move client[" << id << "]'s X(" << g_clients[id].x << "), Y(" << g_clients[id].y << ")\n";
+			g_clients[pl].view_list.insert(id);
+			SendEnterPacket(pl, id);
+		}
+	}
+	// 2. old vl에 없고 new_vl에만 있는 객체
+	for (auto pl : new_viewlist) {
+		if (0 < old_viewlist.count(pl)) continue;
+		g_clients[id].view_list.insert(pl);
+		SendEnterPacket(id, pl);
+		if (0 == g_clients[pl].view_list.count(id)) {
+			g_clients[pl].view_list.insert(id);
+			SendEnterPacket(pl, id);
+		}
+		else {
+			SendMovePacket(pl, id);
+		}
+	}
+	// 3. old vl에 있고 new vl에는 없는 플레이어
+	for (auto pl : old_viewlist) {
+		if (0 < new_viewlist.count(pl)) continue;
+		g_clients[id].view_list.erase(pl);
+		SendLeavePacket(id, pl);
+		// SendLeavePacket(pl, id);
+		if (0 < g_clients[pl].view_list.count(id)) {
+			g_clients[pl].view_list.erase(id);
+			SendLeavePacket(pl, id);
+		}
+	}
+
+
+	
+	// 시야 처리 (1차 시도) --------------------------------
+	////// 시야에 들어온 객체 처리
+	//for (int ob : new_viewlist) { // 뉴 뷰리스트에 있는 객체 ob를 갖다가
+	//	if (0 == old_viewlist.count(ob)) { // id의 올드 뷰리스트에 ob가 있었다면
+	//		g_clients[id].view_list.insert(ob);
+	//		SendEnterPacket(id, ob);
+
+	//		if (0 == g_clients[ob].view_list.count(id)) { // 내가 시야에 없다면
+	//			g_clients[ob].view_list.insert(id);
+	//			SendEnterPacket(ob, id);
+	//		}
+	//		else { // 있다면
+	//		   // 이미 상대방 뷰 리스트에 있으니까 무브 패킷만 보내면 됨
+	//			SendMovePacket(ob, id);
+	//		}
+
+	//	}
+	//	else { // 이전에 시야에 있었고, 이동 후에도 시야에 있는 객체
+	//	   // 계속 시야에 있었기 때문에 내가 가진 정보는 변함이 없음
+	//	   // 멀티 쓰레드라서
+	//		if (0 != g_clients[ob].view_list.count(id)) {
+	//			SendMovePacket(ob, id);
+	//		}
+	//		else {
+	//			g_clients[ob].view_list.insert(id);
+	//			SendEnterPacket(ob, id);
+	//		}
+	//	}
+	//}
+
+	//for (int ob : old_viewlist) { // 이전에는 시야에 있었는데, 이동 후에 없는
+	//	if (0 == new_viewlist.count(ob)) {
+	//		g_clients[id].view_list.erase(id);
+	//		SendLeavePacket(id, ob);
+	//		if (0 != g_clients[ob].view_list.count(id)) {
+	//			g_clients[ob].view_list.erase(id);
+	//			SendLeavePacket(ob, id);
+	//		}
+	//		else {} //다른 애가 이미 지웠네 ㄸㅋ!
+
+	//	}
+	//}
+
+	// 나한테만 알리지 말고 다른 플레이어들도 알게! 널리널리
+	//for (int i = 0; i < MAX_USER; ++i) {
+	//	if (true == g_clients[i].connected) {
+	//		SendMovePacket(i, id);
+	//	}
+	//}
+
+
+}
+void WorkerThread() {
+	// 반복
+	// - 쓰레드를 iocp thread pool에 등록 (GQCS)
+	// - iocp가 처리를 맡긴 i/o 완료
+	// - 데이터 처리 꺼내기 q
+	// - 꺼낸 i/o 완료, 데이터 처리
+	while (true) {
+		DWORD io_size;
+		ULONG_PTR iocp_key;
+		int key;
+		WSAOVERLAPPED* lpover;
+		int ret = GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
+		key = static_cast<int>(iocp_key);
+		cout << "Completion Detected\n";
+		if (FALSE == ret) { // max user exceed 문제 방지. // 0이 나오면 진행하지 않는다.
+			error_display("GQCS Error : ", WSAGetLastError());
+		}
+		OVER_EX* over_ex = reinterpret_cast<OVER_EX*>(lpover);
+		switch (over_ex->op_mode) {
+		case OP_MODE_ACCEPT: 
+		{ // 새 클라이언트 accept
+			AddNewClient(static_cast<SOCKET>(over_ex->wsa_buf.len)); 
+		}
+			break;
+		case OP_MODE_RECV:
+		{
+			if (io_size == 0) { // 클라이언트 접속 종료
+				DisconnectClient(key);
+			}
+			else { // 패킷 처리
+				cout << "Packet from Client [" << key << "]\n";
+				ProcessRecv(key, io_size);
+			}
+		}
+			break;
+		case OP_MODE_SEND:
+			delete over_ex;
+			break;
 		}
 	}
 }
 
-void CALLBACK recv_complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags) {
-	client_info* clientinfo = (struct client_info*)over;
-	SOCKET socket = reinterpret_cast<int>(over->hEvent); // 아래에서 over가 지워진다ㅠㅠ
-	volatile int id = clientinfo->id;
-	if (bytes > 0) {
-		ProcessPacket(g_clients[id].recv_buffer, over, bytes);
-		g_clients[id].recv_buffer[bytes] = 0;
-		// cout << "TRACE - Receive message : " << recv_buffer << "(" << bytes << " bytes)\n";
-		// 다시 recv
-		//ZeroMemory(over, sizeof(*over));
-		if (WSARecv(g_clients[id].sock, &(g_clients[id].recv_wsabuf), 1, NULL, &flags, over, recv_complete)) {
-			int error_code = WSAGetLastError();
-			if(error_code != 997)
-				printf("Error while sending packet [%d]", error_code);
+void AddNewClient(SOCKET ns)
+{
+	// 안 쓰는 id 찾기
+	int i;
+	id_lock.lock();
+	for (i = 0; i < MAX_USER; ++i) {
+		if (false == g_clients[i].connected) break;
+	}
+	id_lock.unlock();
+	// id 다 차면 close
+	if (MAX_USER == i) {
+		cout << "Max user limit exceeded\n";
+		closesocket(ns);
+	}
+	// 공간 남아 있으면
+	else {
+		// g_clients 배열에 정보 넣기
+		g_clients[i].c_lock.lock();
+		g_clients[i].id = i;
+		g_clients[i].connected = true;
+		g_clients[i].sock = ns;
+		g_clients[i].name[0] = 0; // null string으로 초기화 필수
+		g_clients[i].c_lock.unlock();
+		g_clients[i].m_packet_start = g_clients[i].m_recv_over.iocp_buf;
+		g_clients[i].m_recv_over.op_mode = OP_MODE_RECV;
+		g_clients[i].m_recv_over.wsa_buf.buf = reinterpret_cast<CHAR*>(g_clients[i].m_recv_over.iocp_buf); // 실제 버퍼의 주소 가리킴
+		g_clients[i].m_recv_over.wsa_buf.len = sizeof(g_clients[i].m_recv_over.iocp_buf);
+		ZeroMemory(&g_clients[i].m_recv_over.wsa_over, sizeof(g_clients[i].m_recv_over.wsa_over));
+		g_clients[i].m_recv_start = g_clients[i].m_recv_over.iocp_buf; // 이 위치에서 받기 시작한다.
+		g_clients[i].x = rand() % 8;
+		g_clients[i].y = rand() % 8;
+		// 소켓을 iocp에 등록
+		DWORD flags = 0;
+		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0); // 소켓을 iocp에 등록
+		// Recv
+		g_clients[i].c_lock.lock();
+		int ret = 0;
+		if (true == g_clients[i].connected) {
+			ret = WSARecv(g_clients[i].sock, &g_clients[i].m_recv_over.wsa_buf, 1, NULL, &flags, &(g_clients[i].m_recv_over.wsa_over), NULL);
+		}
+		g_clients[i].c_lock.unlock();
+		if (ret == SOCKET_ERROR) {
+			int error_no = WSAGetLastError();
+			if (error_no != ERROR_IO_PENDING) {
+				error_display("WSARecv : ", error_no);
+			}
 		}
 	}
-	else {
-		// 클라이언트에서 접속을 끊었다
-		closesocket(g_clients[id].sock);
-		return;
+	// 다시 accept
+	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	g_accept_over.op_mode = OP_MODE_ACCEPT;
+	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
+	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));// accept overlapped 구조체 사용 전 초기화
+	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, NULL, 32, 32, NULL, &g_accept_over.wsa_over);
+}
+
+void DisconnectClient(int id)
+{
+	// 주변 클라들에게 지우라고 알림
+	for (int i = 0; i < MAX_USER; ++i) {
+		if (true == g_clients[i].connected) {
+			if (i != id) {
+//				if (0 != g_clients[i].view_list.count(id)) {// 뷰리스트에 있는지 확인하고 지움
+//					g_clients[i].view_list.erase(id);
+					SendLeavePacket(i, id);
+//				}
+//				else { // 없으면 지울 필요도 없고 패킷 보낼 필요도 없음
+
+//				}
+			}
+		}
 	}
+
+	g_clients[id].c_lock.lock();
+	g_clients[id].connected = false;
+//	g_clients[id].view_list.clear();
+	closesocket(g_clients[id].sock);
+	g_clients[id].sock = 0;
+	g_clients[id].c_lock.unlock();
 
 }
 
-
-void CALLBACK send_complete(DWORD err, DWORD bytes, LPWSAOVERLAPPED over, DWORD flags) {
-	client_info* clientinfo = (struct client_info*)over;
-	SOCKET socket = reinterpret_cast<int>(over->hEvent);
-	if (bytes > 0) {
-		//printf("TRACE - Send message : %s (%d bytes)\n", send_buffer, bytes);
-	}
-	else {
-		closesocket(socket);
-		return;
-	}
-
+void SendPacket(int id, void* p)
+{
+	unsigned char* packet = reinterpret_cast<unsigned char*>(p);
+	OVER_EX* send_over = new OVER_EX;
+	memcpy(&send_over->iocp_buf, packet, packet[0]);
+	send_over->op_mode = OP_MODE_SEND;
+	send_over->wsa_buf.buf = reinterpret_cast<CHAR*>(send_over->iocp_buf);
+	send_over->wsa_buf.len = packet[0];
+	ZeroMemory(&send_over->wsa_over, sizeof(send_over->wsa_over));
+	//클라이언트의 소켓에 접근하므로 lock
+	g_clients[id].c_lock.lock();
+	if (true == g_clients[id].connected) // use 중이므로 sock이 살아있다
+		WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
+	g_clients[id].c_lock.unlock();
 }
 
+void SendLeavePacket(int to_id, int id)
+{
+	sc_packet_leave packet;
+	packet.id = id;
+	packet.size = sizeof(packet);
+	packet.type = SC_LEAVE;
+	SendPacket(to_id, &packet);
+}
 
-void error_disp(const char* msg, int err_no) {
+void SendLoginOK(int id)
+{
+	sc_packet_login_ok p;
+	p.exp = 0;
+	p.hp = 100;
+	p.id = id;
+	p.level = 1;
+	p.size = sizeof(p);
+	p.type = SC_LOGIN_OK;
+	p.x = g_clients[id].x;
+	p.y = g_clients[id].y;
+	SendPacket(id, &p); // p를 보내면 struct가 몽땅 카피돼서 보내짐
+}
+
+void SendEnterPacket(int to_id, int new_id)
+{
+	sc_packet_enter p;
+	p.id = new_id;
+	p.size = sizeof(p);
+	p.type = SC_ENTER;
+	p.x = g_clients[new_id].x;
+	p.y = g_clients[new_id].y;
+	g_clients[new_id].c_lock.lock();
+	strcpy_s(p.name, g_clients[new_id].name);
+	g_clients[new_id].c_lock.unlock();
+	p.o_type = 0;
+	SendPacket(to_id, &p);
+}
+
+void SendMovePacket(int to_id, int id)
+{
+	sc_packet_move p;
+	p.id = id;
+	p.size = sizeof(p);
+	p.type = SC_MOVEPLAYER;
+	p.x = g_clients[id].x;
+	p.y = g_clients[id].y;
+	SendPacket(to_id, &p);
+}
+
+bool IsNear(int p1, int p2)
+{
+	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
+	dist += (g_clients[p1].y - g_clients[p2].y) * (g_clients[p1].y - g_clients[p2].y);
+	return dist <= VIEW_LIMIT * VIEW_LIMIT;
+}
+
+void error_display(const char* msg, int err_no) {
 	WCHAR* h_mess;
 	FormatMessage(
 		FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,

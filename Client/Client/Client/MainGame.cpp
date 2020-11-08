@@ -1,6 +1,7 @@
 #include "framework.h"
 #include "MainGame.h"
 
+mutex pl;
 void RecvPacket(LPVOID classPtr) {
 	MainGame* maingame = (MainGame*)classPtr;
 
@@ -30,6 +31,7 @@ void RecvPacket(LPVOID classPtr) {
 				short ptX = p->x;
 				short ptY = p->y;
 				maingame->setMyid(packet_id);
+				pl.lock();
 				pPlayers[packet_id].id = packet_id;
 				pPlayers[packet_id].ptX = ptX;
 				pPlayers[packet_id].ptY = ptY;
@@ -38,59 +40,37 @@ void RecvPacket(LPVOID classPtr) {
 				pPlayers[packet_id].bitmap = hBitmaps[2];
 				maingame->setObjectPoint(packet_id, (float)ptX, (float)ptY);
 				maingame->setObjectRect(packet_id);
-
-				//int packet_id;
-				//memcpy(&packet_id, &(ptr[1]) + sizeof(char), sizeof(int));
-				///*int*/short ptX, ptY;
-				//memcpy(&ptX, &(ptr[2]) + sizeof(int), sizeof(short));
-				//memcpy(&ptY, &(ptr[2]) + sizeof(int) + sizeof(short), sizeof(short));
-				//maingame->setMyid(packet_id);
-				//pPlayers[packet_id].id = packet_id;
-				//pPlayers[packet_id].ptX = ptX;
-				//pPlayers[packet_id].ptY = ptY;
-				//pPlayers[packet_id].connected = true; // 아이디 부여 받았으니까 커넥트 된것임!
-				//HBITMAP* hBitmaps = maingame->getBitmaps();
-				//pPlayers[packet_id].bitmap = hBitmaps[2]; // 이때 비트맵을 넣어주자
-				//maingame->setObjectPoint(packet_id, (float)ptX, (float)ptY);
-				//maingame->setObjectRect(packet_id);
+				// 로그인 ok 사인 받으면
+				int t_id = GetCurrentProcessId();
+				char tempBuffer[MAX_NICKNAME] = "";
+				sprintf_s(tempBuffer, "P%03d", t_id % 1000);
+				pPlayers[packet_id].name = new char[MAX_NICKNAME];
+				ZeroMemory(pPlayers[packet_id].name, MAX_NICKNAME);
+				memcpy(pPlayers[packet_id].name, tempBuffer, strlen(tempBuffer));
+				pl.unlock();
 			}
 			break;
 			case SC_MOVEPLAYER:
 			{
-				sc_packet_move_player* p = reinterpret_cast<sc_packet_move_player*>(recv_wsabuf->buf);
+				sc_packet_move* p = reinterpret_cast<sc_packet_move*>(recv_wsabuf->buf);
 				int packet_id = p->id;
 				short ptX = p->x;
 				short ptY = p->y;
+				pl.lock();
 				pPlayers[packet_id].ptX = ptX;
 				pPlayers[packet_id].ptY = ptY;
-				pPlayers[packet_id].connected = true;
+				pl.unlock();
 				maingame->setObjectPoint(packet_id, (float)ptX, (float)ptY);
 				maingame->setObjectRect(packet_id);
 
-				//int packet_id = 0;
-				//memcpy(&packet_id, &(ptr[2]), sizeof(int));
-
-				//short ptX=0, ptY=0;
-				//memcpy(&ptX, &(ptr[2]) + sizeof(int), sizeof(short));
-				//memcpy(&ptY, &(ptr[2]) + sizeof(int) + sizeof(short), sizeof(short));
-				//
-				//// 멀티 플레이어일 때는 배열에 접근해야 해
-				//maingame->setObjectPoint(packet_id, ptX, ptY);
-				//maingame->setObjectRect(packet_id);
-
-				//// 싱글 플레이어일 때는 이렇게 해
-				////pPlayer->ptX = ptX;
-				////pPlayer->ptY = ptY;
-				////maingame->setObjectPoint();
-				////maingame->setObjectRect();
-
-				cout << "Recv Type[" << SC_MOVEPLAYER << "] Player's X[" << ptX << "] Player's Y[" << ptY << "]\n";
+				// cout << "Recv Type[" << SC_MOVEPLAYER << "] Player's X[" << ptX << "] Player's Y[" << ptY << "]\n";
 			}
 			break;
 			case SC_ENTER:
 			{
 				sc_packet_enter* packet = reinterpret_cast<sc_packet_enter*>(ptr);
 				int packet_id = packet->id;
+				pl.lock();
 				pPlayers[packet_id].connected = true;
 				//pPlayers[packet_id].o_type = packet->o_type;
 				//memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
@@ -99,8 +79,28 @@ void RecvPacket(LPVOID classPtr) {
 				pPlayers[packet_id].ptY = packet->y;
 				HBITMAP* hBitmaps = maingame->getBitmaps();
 				pPlayers[packet_id].bitmap = hBitmaps[2];
+				pPlayers[packet_id].name = new char[MAX_NICKNAME];
+				ZeroMemory(pPlayers[packet_id].name, MAX_NICKNAME);
+				memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
+				pl.unlock();
 				maingame->setObjectPoint(packet_id, packet->x, packet->y);
 				maingame->setObjectRect(packet_id);
+			}
+			break;
+			case SC_LEAVE:
+			{
+				sc_packet_leave* my_packet = reinterpret_cast<sc_packet_leave*>(ptr);
+				int packet_id = my_packet->id;
+				pl.lock();
+				delete pPlayers[packet_id].name; // Enter 할 때 new 해줬었음
+				ZeroMemory(&(pPlayers[packet_id]), sizeof(pPlayers[packet_id]));
+				pPlayers[packet_id].connected = false;
+				pl.unlock();
+			}
+			break;
+			default:
+			{
+				printf("Unknown Packet\n");
 			}
 			break;
 			}
@@ -148,23 +148,39 @@ void MainGame::Render()
 	// render BackGround at BackBuffer
 	BitBlt(hdcBuffer, 0, 0, WINCX, WINCY, hdcBackGround, 0, 0, SRCCOPY);
 	// render Line
-	for (int i = 0; i < 8; i++) {
-		MoveToEx(hdcBuffer, TILESIZE * (i+1), 0, NULL);
-		LineTo(hdcBuffer, TILESIZE * (i+1), WINCX);
-		MoveToEx(hdcBuffer, 0, TILESIZE * (i+1), NULL);
-		LineTo(hdcBuffer, WINCX, TILESIZE*(i+1));
+	for (int i = 0; i < TILEMAX + 1; i++) {
+		MoveToEx(hdcBuffer, TILESIZE * (i) + g_scrollX, +g_scrollY, NULL);
+		LineTo(hdcBuffer, TILESIZE * (i) + g_scrollX, TILESIZE * (TILEMAX)+g_scrollY);
+		MoveToEx(hdcBuffer, 0 + g_scrollX, TILESIZE * (i) + g_scrollY, NULL);
+		LineTo(hdcBuffer, TILESIZE * (TILEMAX)+g_scrollX, TILESIZE*(i) + g_scrollY);
 	}
 	// render Players
 	for (int i = 0; i < MAX_USER; ++i) {
 		if (players[i].connected == false) continue;
+		if (players[i].name == nullptr) continue;
 		TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-			players[i].rect.left, players[i].rect.top, /// 이미지를 출력할 위치 x,y
+			players[i].rect.left + g_scrollX, players[i].rect.top + g_scrollY, /// 이미지를 출력할 위치 x,y
 			PLAYERCX, PLAYERCY, /// 출력할 이미지의 너비, 높이
 			hdcPlayer, /// 이미지 핸들
 			0, 0, /// 가져올 이미지의 시작지점 x,y 
 			30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
 			RGB(0, 255, 255) /// 투명하게 할 색상
 		);
+		// render Text(info)
+		if (i == myid) {
+			// 내 캐릭터 구분
+			TextOut(hdcBuffer, players[i].rect.left + 5 + g_scrollX, players[i].y +2 + g_scrollY, L"It's me!", lstrlen(L"It's me"));
+		}
+		// 플레이어 정보 출력
+		TCHAR lpOut[128]; // 좌표
+		wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY)); 
+		TextOut(hdcBuffer, players[i].rect.left + 10 + g_scrollX, players[i].y - 25 + g_scrollY, lpOut, lstrlen(lpOut));
+		TCHAR lpNickname[MAX_NICKNAME];	// 닉네임
+		size_t convertedChars = 0;
+		size_t newsize = strlen(players[i].name) + 1;
+		mbstowcs_s(&convertedChars, lpNickname, newsize, players[i].name, _TRUNCATE);
+		TextOut(hdcBuffer, players[i].rect.left + 5 + g_scrollX, players[i].y - 40 + g_scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+
 	}
 	// render BackBuffer at MainDC (Double Buffering)
 	BitBlt(hdcMain, 0, 0, WINCX, WINCY, hdcBuffer, 0, 0, SRCCOPY);
@@ -181,59 +197,49 @@ void MainGame::InputKeyState(int key)
 {
 	int x = 0, y = 0;
 
-	// -> 다수 클라에서 중복 입력이 됨.. 버리자!
-	//if (pKeyMgr->OnceKeyUp(VK_UP)) {
-	//	y -= 1;
-	//}
-	//else if (pKeyMgr->OnceKeyUp(VK_DOWN)) {
-	//	y += 1;
-	//}
-	//else if (pKeyMgr->OnceKeyUp(VK_LEFT)) {
-	//	x -= 1;
-	//}
-	//else if (pKeyMgr->OnceKeyUp(VK_RIGHT)) {
-	//	x += 1;
-	//}
-
 	// 0: up, 1:down, 2:left, 3:right
 	switch (key) {
-	case 0: y -= 1; break;
-	case 1: y += 1; break;
-	case 2: x -= 1; break;
-	case 3: x += 1; break;
+	case 0: 
+		y -= 1;
+		if (players[myid].ptY > 0 && players[myid].ptY < TILEMAX - 1) g_scrollY += TILESIZE;
+		//else g_scrollY = TILESIZE;
+		break;
+	case 1: 
+		y += 1;
+		if (players[myid].ptY > 0 && players[myid].ptY < TILEMAX - 1) g_scrollY -= TILESIZE;
+		//else g_scrollY = TILESIZE;
+		break;
+	case 2: 
+		x -= 1;
+		if (players[myid].ptX > 0 && players[myid].ptX < TILEMAX - 1) g_scrollX += TILESIZE;
+		//else g_scrollX = TILESIZE;
+		break;
+	case 3: 
+		x += 1;
+		if (players[myid].ptX > 0 && players[myid].ptX < TILEMAX - 1) g_scrollX -= TILESIZE;
+		//else g_scrollX = TILESIZE;
+		break;
 	}
 
 	// 이때 딱 한번 서버에 보냄.
-	cs_packet_up *myPacket = reinterpret_cast<cs_packet_up*>(send_buffer);
-	myPacket->size = sizeof(myPacket);
-	myPacket->id = players[myid].id;
-	send_wsabuf.len = sizeof(myPacket);
-
+	cs_packet_move p;
+	p.size = sizeof(p);
+	p.type = CS_MOVE;
 	if (0 != x) {
-		if (1 == x) myPacket->type = CS_INPUTRIGHT;
-		else myPacket->type = CS_INPUTLEFT;
-		DWORD num_sent;
-		int ret = WSASend(serverSocket, &send_wsabuf, 1, &num_sent, 0, NULL, NULL);
-		cout << "Sent " << send_wsabuf.len << "Bytes\n";
-		if (ret) {
-			int error_code = WSAGetLastError();
-			//printf("Error while sending packet [%d]", error_code);
-		}
-		//ReadPacket();
+		if (1 == x)
+			p.direction = MV_RIGHT;
+		else
+			p.direction = MV_LEFT;
 	}
-	if (0 != y) {
-		if (1 == y) myPacket->type = CS_INPUTDOWN;
-		else myPacket->type = CS_INPUTUP;
-		DWORD num_sent;
-		int ret = WSASend(serverSocket, &send_wsabuf, 1, &num_sent, 0, NULL, NULL);
-		cout << "Sent " << send_wsabuf.len << "Bytes\n";
-		if (ret) {
-			int error_code = WSAGetLastError();
-			//printf("Error while sending packet [%d]", error_code);
-		}
-		//ReadPacket();
+	else if (0 != y) {
+		if (1 == y)
+			p.direction = MV_DOWN;
+		else
+			p.direction = MV_UP;
 	}
+	SendPacket(&p);
 
+	//InvalidateRect(g_hwnd, NULL, TRUE);
 }
 
 void MainGame::setObjectPoint(int id, float ptX, float ptY)
@@ -305,16 +311,48 @@ void MainGame::InitNetwork()
 	inet_pton(AF_INET, SERVER_IP, &serverAddress.sin_addr);
 	if (connect(serverSocket, (sockaddr*)&serverAddress, sizeof(SOCKADDR_IN))) {
 		MessageBox(g_hwnd, L"WSAConnect", L"Failed", MB_OK);
+		return;
 	}
 
 	//WSAAsyncSelect(serverSocket, g_hwnd, WM_SOCKET, FD_CLOSE | FD_READ); // 윈도우 메시지로도 안읽어와지네.. 왜지/..
-	send_wsabuf.buf = send_buffer;
-	send_wsabuf.len = BUF_SIZE;
+	//send_wsabuf.buf = send_buffer;
+	//send_wsabuf.len = BUF_SIZE;
 	recv_wsabuf.buf = recv_buffer;
 	recv_wsabuf.len = BUF_SIZE;
 
 	recvThread = thread{ RecvPacket, this };
 	// ReadPacket(); -> 별도 쓰레드에서 받기로
+
+	// 초기에 login 시도 패킷 보냄
+	cs_packet_login login_packet;
+	login_packet.size = sizeof(login_packet);
+	login_packet.type = CS_LOGIN;
+	int t_id = GetCurrentProcessId();
+	sprintf_s(login_packet.name, "P%03d", t_id % 1000);
+	SendPacket(&login_packet);
+
+	// 멤버변수 mynickname에 닉네임 설정 (char to wchar_t)
+	char tempBuffer[MAX_NICKNAME] = "";
+	strcpy_s(tempBuffer, login_packet.name);
+	size_t convertedChars = 0;
+	size_t newsize = strlen(tempBuffer) + 1;
+	mbstowcs_s(&convertedChars, mynickname, newsize, tempBuffer, _TRUNCATE);
+
+	//strcpy_s(mynickname, login_packet.name);
+	//mynickname = new wchar_t;
+}
+
+void MainGame::SendPacket(void* packet)
+{
+	char* p = reinterpret_cast<char*>(packet);
+	send_wsabuf.buf = p;
+	send_wsabuf.len = p[0];
+	DWORD num_sent;
+	int ret = WSASend(serverSocket, &send_wsabuf, 1, &num_sent, 0, NULL, NULL);
+	if (ret) {
+		int error_code = WSAGetLastError();
+		//printf("Error while sending packet [%d]", error_code);
+	}
 }
 
 

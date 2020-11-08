@@ -32,10 +32,12 @@ private:
 	HBITMAP bitmaps[3];
 private:
 	int myid=-1;
+	wchar_t mynickname[128] = L"";
 	OBJ players[MAX_USER] = {};
 /// ////////////////////////////////////////////////////////////
 public:
 	void InitNetwork();
+	void SendPacket(void* packet);
 public:
 	const SOCKET* getServerSocket() {
 		if (&serverSocket != nullptr) return &serverSocket;
@@ -48,7 +50,7 @@ private:
 	WSABUF send_wsabuf;
 	WSABUF recv_wsabuf;
 	char	packet_buffer[BUF_SIZE];
-	char 	send_buffer[BUF_SIZE];
+	//char 	send_buffer[BUF_SIZE];
 	char	recv_buffer[BUF_SIZE];
 	thread recvThread;
 };
