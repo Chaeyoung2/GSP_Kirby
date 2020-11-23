@@ -43,11 +43,12 @@ struct client_info {
 	short x, y;
 	SOCKET sock;
 	bool connected = false;
-	char oType;
+	//char oType;
 	unsigned char* m_packet_start;
 	unsigned char* m_recv_start;
 	mutex vl;
 	unordered_set<int> view_list;
+	int move_time;
 };
 
 mutex id_lock;//아이디를 넣어줄때 상호배제해줄 락킹
@@ -85,19 +86,19 @@ int main()
 	CreateIoCompletionPort(reinterpret_cast<HANDLE>(g_listenSocket), h_iocp, KEY_SERVER, 0); // iocp에 리슨 소켓 등록
 
 	SOCKADDR_IN serverAddress;
-	memset(&serverAddress, 0, sizeof(serverAddress));
+	memset(&serverAddress, 0, sizeof(SOCKADDR_IN));
 	serverAddress.sin_family = AF_INET;
 	serverAddress.sin_port = htons(SERVER_PORT);
 	serverAddress.sin_addr.s_addr = INADDR_ANY;
 	::bind(g_listenSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
-	listen(g_listenSocket, MAX_USER);
+	listen(g_listenSocket, 5);
 
 	// Accept
 	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	g_accept_over.op_mode = OP_MODE_ACCEPT;
 	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
 	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));
-	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, NULL, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
+	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
 
 	vector <thread> workerthreads;
 	for (int i = 0; i < 6; ++i) {
@@ -142,12 +143,15 @@ void ProcessPacket(int id)
 	case CS_MOVE:
 	{
 		cs_packet_move* p = reinterpret_cast<cs_packet_move*>(g_clients[id].m_packet_start);
+		g_clients[id].move_time = p->move_time;
 		ProcessMove(id, p->direction);
 	}
 	break;
 	default:
 	{
+#ifdef DEBUG
 		cout << "Unkown Packet type[" << p_type << "] from Client [" << id << "]\n";
+#endif
 		while (true);
 	}
 	break;
@@ -207,7 +211,9 @@ void ProcessMove(int id, char dir)
 		if (x < WORLD_WIDTH - 1) x++;
 		break;
 	default:
+#ifdef DEBUG
 		cout << "Unknown Direction in CS_MOVE packet\n";
+#endif
 		while (true);
 		break;
 	}
@@ -231,7 +237,7 @@ void ProcessMove(int id, char dir)
 
 	// 뷰 리스트 처리
 	//// 이동 후 객체-객체가 서로 보이나 안 보이나 처리
-	unordered_set<int> new_viewlist;
+	unordered_set<int> new_viewlist; 
 	for (int i = 0; i < MAX_USER; ++i) {
 		if (id == i) continue;
 		if (false == g_clients[i].connected) continue;
@@ -239,42 +245,78 @@ void ProcessMove(int id, char dir)
 			new_viewlist.insert(i); // 뉴 뷰리스트에 i를 넣는다
 		}
 	}
-	// 시야 처리 (2차 시도)-----------------------------------
-	// 1. old vl에 있고 new vl에도 있는 객체 // 서로가 
-	for (auto pl : old_viewlist) {
-		if (0 == new_viewlist.count(pl)) continue;
-		if (0 < g_clients[pl].view_list.count(id)) {
-			SendMovePacket(pl, id);
+	// 시야 처리 (3차 시도)-------------------------------
+	for (int ob : new_viewlist) { // 이동 후 new viewlist (시야에 들어온) 객체에 대해 처리 - enter할 건지, move만 할 건지
+		if (0 == old_viewlist.count(ob)) { // 이동 전에 시야에 없었던 경우
+			g_clients[id].view_list.insert(ob); // 이동한 클라이언트(id)의 실제 뷰리스트에 넣는다
+			SendEnterPacket(id, ob); // 이동한 클라이언트(id)에게 시야에 들어온 ob를 enter하게 한다
+			
+			if (0 == g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob의 뷰리스트에 id가 없었다면
+				g_clients[ob].view_list.insert(id); // 시야에 들어온 ob의 뷰리스트에 id를 넣어주고
+				SendEnterPacket(ob, id); // ob에게 id를 enter하게 한다
+			}
+			else {// 시야에 들어온 ob의 뷰리스트에 id가 있었다면 
+				SendMovePacket(ob, id); // ob에게 id를 move하게 한다
+			}
 		}
-		else {
-			g_clients[pl].view_list.insert(id);
-			SendEnterPacket(pl, id);
-		}
-	}
-	// 2. old vl에 없고 new_vl에만 있는 객체
-	for (auto pl : new_viewlist) {
-		if (0 < old_viewlist.count(pl)) continue;
-		g_clients[id].view_list.insert(pl);
-		SendEnterPacket(id, pl);
-		if (0 == g_clients[pl].view_list.count(id)) {
-			g_clients[pl].view_list.insert(id);
-			SendEnterPacket(pl, id);
-		}
-		else {
-			SendMovePacket(pl, id);
-		}
-	}
-	// 3. old vl에 있고 new vl에는 없는 플레이어
-	for (auto pl : old_viewlist) {
-		if (0 < new_viewlist.count(pl)) continue;
-		g_clients[id].view_list.erase(pl);
-		SendLeavePacket(id, pl);
-		// SendLeavePacket(pl, id);
-		if (0 < g_clients[pl].view_list.count(id)) {
-			g_clients[pl].view_list.erase(id);
-			SendLeavePacket(pl, id);
+		else {  // 이동 전에 시야에 있었던 경우
+			if (0 != g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob가 id뷰리스트에 원래 있었ㄷ면
+				SendMovePacket(ob, id); // ob에게 id move 패킷 보냄
+			}
+			else // id가 ob의 뷰리스트에 없었다면
+			{ 
+				g_clients[ob].view_list.insert(id); // ob의 뷰리스트에 id 넣어줌 
+				SendEnterPacket(ob, id); // ob에게 id를 enter하게 한다
+			}
 		}
 	}
+	for (int ob : old_viewlist) { // 이동 후 old viewlist 안의 객체에 대해 처리 - leave 처리 할 건지, 유지할 건지
+		if (0 == new_viewlist.count(ob)) { // 이동 후 old viewlist에는 있는데 new viewlist에 없다 -> 시야에서 사라졌다
+			g_clients[id].view_list.erase(ob); // 이동한 id의 뷰리스트에서 ob를 삭제
+			SendLeavePacket(id, ob); // id가 ob를 leave 하게끔
+			if (0 != g_clients[ob].view_list.count(id)) { // ob의 뷰리스트에 id가 있었다면
+				g_clients[ob].view_list.erase(id); // ob의 뷰리스트에서도 id를 삭제
+				SendLeavePacket(ob, id); // ob가 id를 leave 하게끔
+			}
+		}
+	}
+}
+	//// 시야 처리 (2차 시도)-----------------------------------
+	//// 1. old vl에 있고 new vl에도 있는 객체 // 서로가 
+	//for (auto pl : old_viewlist) {
+	//	if (0 == new_viewlist.count(pl)) continue;
+	//	if (0 < g_clients[pl].view_list.count(id)) {
+	//		SendMovePacket(pl, id);
+	//	}
+	//	else {
+	//		g_clients[pl].view_list.insert(id);
+	//		SendEnterPacket(pl, id);
+	//	}
+	//}
+	//// 2. old vl에 없고 new_vl에만 있는 객체
+	//for (auto pl : new_viewlist) {
+	//	if (0 < old_viewlist.count(pl)) continue;
+	//	g_clients[id].view_list.insert(pl);
+	//	SendEnterPacket(id, pl);
+	//	if (0 == g_clients[pl].view_list.count(id)) {
+	//		g_clients[pl].view_list.insert(id);
+	//		SendEnterPacket(pl, id);
+	//	}
+	//	else {
+	//		SendMovePacket(pl, id);
+	//	}
+	//}
+	//// 3. old vl에 있고 new vl에는 없는 플레이어
+	//for (auto pl : old_viewlist) {
+	//	if (0 < new_viewlist.count(pl)) continue;
+	//	g_clients[id].view_list.erase(pl);
+	//	SendLeavePacket(id, pl);
+	//	// SendLeavePacket(pl, id);
+	//	if (0 < g_clients[pl].view_list.count(id)) {
+	//		g_clients[pl].view_list.erase(id);
+	//		SendLeavePacket(pl, id);
+	//	}
+	//}
 
 
 	
@@ -343,7 +385,9 @@ void WorkerThread() {
 		WSAOVERLAPPED* lpover;
 		int ret = GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
 		key = static_cast<int>(iocp_key);
+#ifdef DEBUG
 		cout << "Completion Detected\n";
+#endif
 		if (FALSE == ret) { // max user exceed 문제 방지. // 0이 나오면 진행하지 않는다.
 			error_display("GQCS Error : ", WSAGetLastError());
 		}
@@ -360,7 +404,9 @@ void WorkerThread() {
 				DisconnectClient(key);
 			}
 			else { // 패킷 처리
+#ifdef DEBUG
 				cout << "Packet from Client [" << key << "]\n";
+#endif
 				ProcessRecv(key, io_size);
 			}
 		}
@@ -383,7 +429,9 @@ void AddNewClient(SOCKET ns)
 	id_lock.unlock();
 	// id 다 차면 close
 	if (MAX_USER == i) {
+#ifdef DEBUG
 		cout << "Max user limit exceeded\n";
+#endif
 		closesocket(ns);
 	}
 	// 공간 남아 있으면
@@ -401,8 +449,8 @@ void AddNewClient(SOCKET ns)
 		g_clients[i].m_recv_over.wsa_buf.len = sizeof(g_clients[i].m_recv_over.iocp_buf);
 		ZeroMemory(&g_clients[i].m_recv_over.wsa_over, sizeof(g_clients[i].m_recv_over.wsa_over));
 		g_clients[i].m_recv_start = g_clients[i].m_recv_over.iocp_buf; // 이 위치에서 받기 시작한다.
-		g_clients[i].x = rand() % 8;
-		g_clients[i].y = rand() % 8;
+		g_clients[i].x = rand() % WORLD_WIDTH;
+		g_clients[i].y = rand() % WORLD_HEIGHT;
 		// 소켓을 iocp에 등록
 		DWORD flags = 0;
 		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0); // 소켓을 iocp에 등록
@@ -423,9 +471,9 @@ void AddNewClient(SOCKET ns)
 	// 다시 accept
 	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	g_accept_over.op_mode = OP_MODE_ACCEPT;
-	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
-	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));// accept overlapped 구조체 사용 전 초기화
-	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, NULL, 32, 32, NULL, &g_accept_over.wsa_over);
+	g_accept_over.wsa_buf.len = static_cast<ULONG>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
+	ZeroMemory(&g_accept_over.wsa_over, sizeof(g_accept_over.wsa_over));// accept overlapped 구조체 사용 전 초기화
+	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over);
 }
 
 void DisconnectClient(int id)
@@ -434,10 +482,10 @@ void DisconnectClient(int id)
 	for (int i = 0; i < MAX_USER; ++i) {
 		if (true == g_clients[i].connected) {
 			if (i != id) {
-//				if (0 != g_clients[i].view_list.count(id)) {// 뷰리스트에 있는지 확인하고 지움
-//					g_clients[i].view_list.erase(id);
+				if (0 != g_clients[i].view_list.count(id)) {// 뷰리스트에 있는지 확인하고 지움
+					g_clients[i].view_list.erase(id);
 					SendLeavePacket(i, id);
-//				}
+				}
 //				else { // 없으면 지울 필요도 없고 패킷 보낼 필요도 없음
 
 //				}
@@ -447,7 +495,7 @@ void DisconnectClient(int id)
 
 	g_clients[id].c_lock.lock();
 	g_clients[id].connected = false;
-//	g_clients[id].view_list.clear();
+	g_clients[id].view_list.clear();
 	closesocket(g_clients[id].sock);
 	g_clients[id].sock = 0;
 	g_clients[id].c_lock.unlock();
@@ -516,6 +564,7 @@ void SendMovePacket(int to_id, int id)
 	p.type = SC_MOVEPLAYER;
 	p.x = g_clients[id].x;
 	p.y = g_clients[id].y;
+	p.move_time = g_clients[id].move_time;
 	SendPacket(to_id, &p);
 }
 
