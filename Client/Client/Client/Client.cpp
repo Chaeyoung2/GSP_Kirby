@@ -15,8 +15,6 @@ MainGame mainGame;
 
 // extern
 HWND g_hwnd;
-int g_scrollX = 0;
-int g_scrollY = 0;
 
 // 이 코드 모듈에 포함된 함수의 선언을 전달합니다:
 ATOM                MyRegisterClass(HINSTANCE hInstance);

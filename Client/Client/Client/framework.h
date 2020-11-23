@@ -40,8 +40,6 @@ using namespace std;
 
 // extern
 extern HWND g_hwnd;
-extern int g_scrollX;
-extern int g_scrollY;
 
 // struct
 typedef struct tagObject {
