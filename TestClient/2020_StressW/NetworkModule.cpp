@@ -88,10 +88,9 @@ void error_display(const char* msg, int err_no)
 		(LPTSTR)&lpMsgBuf, 0, NULL);
 	std::cout << msg;
 	std::wcout << L"¿¡·¯" << lpMsgBuf << std::endl;
-
 	MessageBox(hWnd, lpMsgBuf, L"ERROR", 0);
 	LocalFree(lpMsgBuf);
-	// while (true);
+	while (true);
 }
 
 void DisconnectClient(int ci)

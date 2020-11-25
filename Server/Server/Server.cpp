@@ -6,6 +6,7 @@
 #include <vector>
 #include <mutex>
 #include <unordered_set>
+#include <atomic>
 #include "protocol.h"
 
 using namespace std;
@@ -38,15 +39,15 @@ struct client_info {
 	}
 	OVER_EX m_recv_over;
 	mutex c_lock;
-	int id;
+	int id = -1;
 	char name[MAX_ID_LEN];
 	short x, y;
-	SOCKET sock;
-	bool connected = false;
+	SOCKET sock = -1;
+	atomic_bool connected = false;
 	//char oType;
 	unsigned char* m_packet_start;
 	unsigned char* m_recv_start;
-	mutex vl;
+	//mutex vl;
 	unordered_set<int> view_list;
 	int move_time;
 };
@@ -124,6 +125,13 @@ void ProcessPacket(int id)
 		g_clients[id].c_lock.lock();
 		strcpy_s(g_clients[id].name, p->name);
 		g_clients[id].c_lock.unlock();
+		//char cl_name[256] = "";
+		//strcpy_s(cl_name, g_clients[id].name);
+		//if (true == atomic_compare_exchange_strong(
+		//	reinterpret_cast<volatile atomic_int*>(g_clients[id].name),
+		//	reinterpret_cast<int*>(cl_name),
+		//	reinterpret_cast<atomic_char>(p->name) ) {
+		//}
 		SendLoginOK(id);
 		for (int i = 0; i < MAX_USER; ++i) {
 			if (false == g_clients[i].connected) continue;
@@ -173,7 +181,7 @@ void ProcessRecv(int id, DWORD iosize)
 			break;
 	}
 	// 패킷 조립하고 이만큼 남았음.
-	int left_data = next_recv_ptr - g_clients[id].m_packet_start;
+	long long left_data = next_recv_ptr - g_clients[id].m_packet_start;
 	// 버퍼를 다 썼으면 초기화해야 함. (앞으로 밀어버린다)
 	if ((MAX_BUFFER - (next_recv_ptr - g_clients[id].m_recv_over.iocp_buf) < MIN_BUFFER)) { // 버퍼가 MIN_BUFFER 크기보다 작으면
 		memcpy(g_clients[id].m_recv_over.iocp_buf, g_clients[id].m_packet_start, left_data); // 남아 있는 바이트만큼 copy 
@@ -185,11 +193,18 @@ void ProcessRecv(int id, DWORD iosize)
 	// 어디서부터 다시 받을지
 	g_clients[id].m_recv_start = next_recv_ptr;
 	g_clients[id].m_recv_over.wsa_buf.buf = reinterpret_cast<CHAR*>(next_recv_ptr);
-	g_clients[id].m_recv_over.wsa_buf.len = MAX_BUFFER - (next_recv_ptr - g_clients[id].m_recv_over.iocp_buf); // 남아 있는 버퍼 용량
-	g_clients[id].c_lock.lock();
-	if (true == g_clients[id].connected)
+	g_clients[id].m_recv_over.wsa_buf.len = MAX_BUFFER - static_cast<int>(next_recv_ptr - g_clients[id].m_recv_over.iocp_buf); // 남아 있는 버퍼 용량
+	// 최적화
+	bool connected = true;
+	if (true == atomic_compare_exchange_strong(
+		&g_clients[id].connected, &connected, true)) {
 		WSARecv(g_clients[id].sock, &g_clients[id].m_recv_over.wsa_buf, 1, NULL, &recv_flag, &g_clients[id].m_recv_over.wsa_over, NULL);
-	g_clients[id].c_lock.unlock();
+	}
+	// 최적화 전
+	//g_clients[id].c_lock.lock();
+	//if (true == g_clients[id].connected)
+	//	WSARecv(g_clients[id].sock, &g_clients[id].m_recv_over.wsa_buf, 1, NULL, &recv_flag, &g_clients[id].m_recv_over.wsa_over, NULL);
+	//g_clients[id].c_lock.unlock();
 }
 
 void ProcessMove(int id, char dir)
@@ -280,7 +295,8 @@ void ProcessMove(int id, char dir)
 			}
 		}
 	}
-}
+
+
 	//// 시야 처리 (2차 시도)-----------------------------------
 	//// 1. old vl에 있고 new vl에도 있는 객체 // 서로가 
 	//for (auto pl : old_viewlist) {
@@ -326,7 +342,6 @@ void ProcessMove(int id, char dir)
 	//	if (0 == old_viewlist.count(ob)) { // id의 올드 뷰리스트에 ob가 있었다면
 	//		g_clients[id].view_list.insert(ob);
 	//		SendEnterPacket(id, ob);
-
 	//		if (0 == g_clients[ob].view_list.count(id)) { // 내가 시야에 없다면
 	//			g_clients[ob].view_list.insert(id);
 	//			SendEnterPacket(ob, id);
@@ -335,7 +350,6 @@ void ProcessMove(int id, char dir)
 	//		   // 이미 상대방 뷰 리스트에 있으니까 무브 패킷만 보내면 됨
 	//			SendMovePacket(ob, id);
 	//		}
-
 	//	}
 	//	else { // 이전에 시야에 있었고, 이동 후에도 시야에 있는 객체
 	//	   // 계속 시야에 있었기 때문에 내가 가진 정보는 변함이 없음
@@ -349,7 +363,6 @@ void ProcessMove(int id, char dir)
 	//		}
 	//	}
 	//}
-
 	//for (int ob : old_viewlist) { // 이전에는 시야에 있었는데, 이동 후에 없는
 	//	if (0 == new_viewlist.count(ob)) {
 	//		g_clients[id].view_list.erase(id);
@@ -359,10 +372,8 @@ void ProcessMove(int id, char dir)
 	//			SendLeavePacket(ob, id);
 	//		}
 	//		else {} //다른 애가 이미 지웠네 ㄸㅋ!
-
 	//	}
 	//}
-
 	// 나한테만 알리지 말고 다른 플레이어들도 알게! 널리널리
 	//for (int i = 0; i < MAX_USER; ++i) {
 	//	if (true == g_clients[i].connected) {
@@ -389,7 +400,13 @@ void WorkerThread() {
 		cout << "Completion Detected\n";
 #endif
 		if (FALSE == ret) { // max user exceed 문제 방지. // 0이 나오면 진행하지 않는다.
-			error_display("GQCS Error : ", WSAGetLastError());
+			int error_no = WSAGetLastError();
+			if (64 == error_no) { // 
+				DisconnectClient(key);
+				continue;
+			}
+			else 
+				error_display("GQCS Error : ", error_no);
 		}
 		OVER_EX* over_ex = reinterpret_cast<OVER_EX*>(lpover);
 		switch (over_ex->op_mode) {
@@ -421,28 +438,60 @@ void WorkerThread() {
 void AddNewClient(SOCKET ns)
 {
 	// 안 쓰는 id 찾기
-	int i;
-	id_lock.lock();
-	for (i = 0; i < MAX_USER; ++i) {
-		if (false == g_clients[i].connected) break;
+	//// 최적화 전 ----
+	//int i;
+	//id_lock.lock();
+	//for (i = 0; i < MAX_USER; ++i) {
+	//	if (false == g_clients[i].connected) 
+	//		break;
+	//}
+	//id_lock.unlock();
+	//// 최적화 후 ----
+	//atomic_int i = 0;
+	//bool connected = false;
+	//int compare_val = =1;
+	//for (; i < MAX_USER;) {
+	//	if (false == g_clients[i].connected){
+	//		int plus_i = i + 1;
+	//		atomic_compare_exchange_strong(&i, &compare_val, plus_i);
+	//		break;
+	//	}
+	//	atomic_compare_exchange_strong(&i, &compare_val, i+1);
+	//}
+	// 최적화 2 ----
+	int i = -1;
+	int compare_val = -1;
+	for (int j = 0; j < MAX_USER; ++j) {
+		if (false == g_clients[j].connected) {
+			atomic_compare_exchange_strong(reinterpret_cast<atomic_int*>(&i), &compare_val, j);
+			break;
+		}
 	}
-	id_lock.unlock();
 	// id 다 차면 close
 	if (MAX_USER == i) {
-#ifdef DEBUG
 		cout << "Max user limit exceeded\n";
-#endif
 		closesocket(ns);
 	}
 	// 공간 남아 있으면
 	else {
 		// g_clients 배열에 정보 넣기
-		g_clients[i].c_lock.lock();
-		g_clients[i].id = i;
-		g_clients[i].connected = true;
-		g_clients[i].sock = ns;
-		g_clients[i].name[0] = 0; // null string으로 초기화 필수
-		g_clients[i].c_lock.unlock();
+		// 최적화 전 ----
+		//g_clients[i].c_lock.lock();
+		//g_clients[i].id = i;
+		//g_clients[i].connected = true;
+		//g_clients[i].sock = ns;
+		//g_clients[i].name[0] = 0; // null string으로 초기화 필수
+		//g_clients[i].c_lock.unlock();
+		// 최적화 후 ----
+		int i_compare_val = -1;
+		bool b_compare_val = false;
+		char c_compare_val = 0;
+		SOCKET u_compare_val = -1;
+		atomic_compare_exchange_strong(reinterpret_cast<atomic_int*>(&g_clients[i].id), &i_compare_val, i);
+		atomic_compare_exchange_strong(reinterpret_cast<atomic_bool*>(&g_clients[i].connected), &b_compare_val, true);
+		atomic_compare_exchange_strong(reinterpret_cast<atomic_uintptr_t*>(&g_clients[i].sock), &u_compare_val, ns);
+		atomic_compare_exchange_strong(reinterpret_cast<atomic_char*>(&(g_clients[i].name[0])), &c_compare_val, 0);
+
 		g_clients[i].m_packet_start = g_clients[i].m_recv_over.iocp_buf;
 		g_clients[i].m_recv_over.op_mode = OP_MODE_RECV;
 		g_clients[i].m_recv_over.wsa_buf.buf = reinterpret_cast<CHAR*>(g_clients[i].m_recv_over.iocp_buf); // 실제 버퍼의 주소 가리킴
@@ -455,12 +504,19 @@ void AddNewClient(SOCKET ns)
 		DWORD flags = 0;
 		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0); // 소켓을 iocp에 등록
 		// Recv
-		g_clients[i].c_lock.lock();
+		// 최적화
+		//g_clients[i].c_lock.lock();
+		//int ret = 0;
+		//if (true == g_clients[i].connected) {
+		//	ret = WSARecv(g_clients[i].sock, &g_clients[i].m_recv_over.wsa_buf, 1, NULL, &flags, &(g_clients[i].m_recv_over.wsa_over), NULL);
+		//}
+		//g_clients[i].c_lock.unlock();
 		int ret = 0;
-		if (true == g_clients[i].connected) {
+		bool connected = true;
+		if (true == atomic_compare_exchange_strong(
+			&g_clients[i].connected, &connected, true)) {
 			ret = WSARecv(g_clients[i].sock, &g_clients[i].m_recv_over.wsa_buf, 1, NULL, &flags, &(g_clients[i].m_recv_over.wsa_over), NULL);
 		}
-		g_clients[i].c_lock.unlock();
 		if (ret == SOCKET_ERROR) {
 			int error_no = WSAGetLastError();
 			if (error_no != ERROR_IO_PENDING) {
@@ -493,12 +549,20 @@ void DisconnectClient(int id)
 		}
 	}
 
-	g_clients[id].c_lock.lock();
-	g_clients[id].connected = false;
-	g_clients[id].view_list.clear();
-	closesocket(g_clients[id].sock);
-	g_clients[id].sock = 0;
-	g_clients[id].c_lock.unlock();
+	//g_clients[id].c_lock.lock();
+	//g_clients[id].connected = false;
+	//g_clients[id].view_list.clear();
+	//closesocket(g_clients[id].sock);
+	//g_clients[id].sock = 0;
+	//g_clients[id].c_lock.unlock();
+	// 최적화
+	int i_compare_val = 0;
+	bool b_compare_val = true;
+	if (true == atomic_compare_exchange_strong(&g_clients[id].connected, &b_compare_val, false)) {
+		g_clients[id].view_list.clear();
+		closesocket(g_clients[id].sock);
+		g_clients[id].sock = 0;
+	}
 
 }
 
@@ -512,10 +576,15 @@ void SendPacket(int id, void* p)
 	send_over->wsa_buf.len = packet[0];
 	ZeroMemory(&send_over->wsa_over, sizeof(send_over->wsa_over));
 	//클라이언트의 소켓에 접근하므로 lock
-	g_clients[id].c_lock.lock();
-	if (true == g_clients[id].connected) // use 중이므로 sock이 살아있다
+	//g_clients[id].c_lock.lock();
+	//if (true == g_clients[id].connected) // use 중이므로 sock이 살아있다
+	//	WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
+	//g_clients[id].c_lock.unlock();
+	// 최적화
+	bool connected = true;
+	if (true == atomic_compare_exchange_strong(&g_clients[id].connected, &connected, true)) {
 		WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
-	g_clients[id].c_lock.unlock();
+	}
 }
 
 void SendLeavePacket(int to_id, int id)
