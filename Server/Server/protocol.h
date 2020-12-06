@@ -4,14 +4,18 @@
 
 constexpr int SERVER_PORT = 3500;
 
-constexpr int TILEMAX = 400;
-constexpr int WORLD_WIDTH = 400;
-constexpr int WORLD_HEIGHT = 400;
+constexpr int TILESCREENMAX = 20;
+constexpr int TILEMAX = 2000;
+constexpr int WORLD_WIDTH = 2000;
+constexpr int WORLD_HEIGHT = 2000;
 constexpr int MAX_BUFFER = 4096;
 constexpr int MIN_BUFFER = 1024;
 
 constexpr int MAX_ID_LEN = 10;
 constexpr int MAX_USER = 10000;
+
+constexpr int VIEW_LIMIT = 8;
+constexpr int NUM_NPC = 200000;
 
 #pragma pack (push, 1)
 

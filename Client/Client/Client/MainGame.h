@@ -17,6 +17,8 @@ public:
 	void setObjectRect(int id);
 	void setScroll(int ptX, int ptY);
 public:
+	bool isNear(int x1, int y1, int x2, int y2, int viewlimit);
+public:
 	void LoadBitmaps();
 public:
 	OBJ* getPlayers() {
@@ -27,10 +29,10 @@ public:
 	}
 private:
 	HDC hdc;
-	HBITMAP bitmaps[3];
+	HBITMAP bitmaps[4];
 private:
 	wchar_t mynickname[128] = L"";
-	OBJ players[MAX_USER] = {};
+	OBJ players[MAX_USER+NUM_NPC] = {};
 /// ////////////////////////////////////////////////////////////
 public:
 	void InitNetwork();

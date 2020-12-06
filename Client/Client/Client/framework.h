@@ -30,11 +30,13 @@ using namespace std;
 #pragma warning(disable:4703)
 
 // define
-#define WINCX 770
-#define WINCY 770
-#define PLAYERCX 50
-#define PLAYERCY 50
-#define TILESIZE 70
+#define WINCX 800
+#define WINCY 800
+#define PLAYERCX 30
+#define PLAYERCY 30
+#define MON1CX 30
+#define MON1CY 30
+#define TILESIZE 40
 #define WM_SOCKET (WM_USER+1)
 #define SERVER_IP "127.0.0.1"
 
