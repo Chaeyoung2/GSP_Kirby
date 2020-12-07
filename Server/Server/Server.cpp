@@ -1,7 +1,6 @@
 #include <iostream>
 #include <WS2tcpip.h>
 #include <MSWSock.h>
-#include <stdlib.h>
 #include <thread>
 #include <vector>
 #include <mutex>
@@ -11,11 +10,18 @@
 #include <queue>
 #include "protocol.h"
 
+extern "C" {
+#include "include/lua.h"
+#include "include/lauxlib.h"
+#include "include/lualib.h"
+}
+
 using namespace std;
 using namespace chrono;
 
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "MSWSock.lib")
+#pragma comment(lib, "lua54.lib")
 
 constexpr int KEY_SERVER = 1000000; // 클라이언트 아이디와 헷갈리지 않게 큰 값으로
 
@@ -23,15 +29,14 @@ constexpr char OP_MODE_RECV = 0;
 constexpr char OP_MODE_SEND = 1;
 constexpr char OP_MODE_ACCEPT = 2;
 constexpr char OP_RANDOM_MOVE = 3;
-
-
-int cur_playerCnt = 0;
+constexpr char OP_PLAYER_MOVE_NOTIFY = 4;
 
 struct OVER_EX {
 	WSAOVERLAPPED wsa_over;
 	char op_mode;
 	WSABUF wsa_buf;
 	unsigned char iocp_buf[MAX_BUFFER];
+	int object_id;
 };
 struct client_info {
 	client_info() {}
@@ -43,6 +48,7 @@ struct client_info {
 	int id = -1;
 	char name[MAX_ID_LEN];
 	short x, y;
+	lua_State* L;
 	SOCKET sock = -1;
 	atomic_bool connected = false;
 	atomic_bool is_active;
@@ -52,6 +58,7 @@ struct client_info {
 	//mutex vl;
 	unordered_set<int> view_list;
 	int move_time;
+	short sx, sy;
 };
 struct event_type {
 	int obj_id;
@@ -70,6 +77,9 @@ SOCKET g_listenSocket;
 OVER_EX g_accept_over; // accept용 overlapped 구조체
 priority_queue<event_type> timer_queue;
 mutex timer_l;
+
+#define S_VIEW VIEW_LIMIT * 2
+unordered_set<int> g_sector[S_VIEW][S_VIEW];
 
 void error_display(const char* msg, int err_no);
 
@@ -94,9 +104,14 @@ void SendLeavePacket(int to_id, int id);
 void SendLoginOK(int id);
 void SendEnterPacket(int to_id, int new_id);
 void SendMovePacket(int to_id, int id);
+void SendChatPacket(int to_client, int id, char* mess);
 
 bool IsNear(int p1, int p2);
 bool IsNPC(int p1);
+
+int API_SendMessage(lua_State* L);
+int API_get_y(lua_State* L);
+int API_get_x(lua_State* L);
 
 int main()
 {
@@ -127,28 +142,22 @@ int main()
 	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));
 	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
 
-	// NPC 생성
+	// NPC 정보 세팅
 	InitializeNPC();
-
 
 	// timer thread 생성
 	thread timer_thread{ TimerThread };
-
 	// worker thread 생성
 	vector <thread> workerthreads;
-
-
 	for (int i = 0; i < 6; ++i) {
 		workerthreads.emplace_back(WorkerThread);
 	}
 	for (auto& t : workerthreads)
 		t.join();
-
 	timer_thread.join();
 
 	closesocket(g_listenSocket);
 	WSACleanup();
-	
 	return 0;
 }
 
@@ -242,8 +251,7 @@ void ProcessRecv(int id, DWORD iosize)
 	g_clients[id].m_recv_over.wsa_buf.len = MAX_BUFFER - static_cast<int>(next_recv_ptr - g_clients[id].m_recv_over.iocp_buf); // 남아 있는 버퍼 용량
 	// 최적화
 	bool connected = true;
-	if (true == atomic_compare_exchange_strong(
-		&g_clients[id].connected, &connected, true)) {
+	if (true == g_clients[id].connected.compare_exchange_strong(connected, true)) {
 		WSARecv(g_clients[id].sock, &g_clients[id].m_recv_over.wsa_buf, 1, NULL, &recv_flag, &g_clients[id].m_recv_over.wsa_over, NULL);
 	}
 	// 최적화 전
@@ -280,21 +288,15 @@ void ProcessMove(int id, char dir)
 	}
 
 	// 이동 전 뷰 리스트
-	unordered_set<int> old_viewlist = g_clients[id].view_list; 
+	g_clients[id].c_lock.lock();
+	unordered_set<int> old_viewlist = g_clients[id].view_list;
+	g_clients[id].c_lock.unlock();
 
 	g_clients[id].x = x;
 	g_clients[id].y = y;
 
 	// 나에게 알림
 	SendMovePacket(id, id);
-
-	// a
-	//for (int i = 0; i < MAX_USER; ++i) {
-	//	if (false == g_clients[i].in_use) continue;
-	//	if (i == id) continue;
-	//	SendMovePacket(i, id);
-	//}
-	// ----------------------- 시야 처리 구현하면 주석 해제할 것.. 위에 a 코드 지워도 됨
 
 	// 뷰 리스트 처리
 	//// 이동 후 객체-객체가 서로 보이나 안 보이나 처리
@@ -318,24 +320,30 @@ void ProcessMove(int id, char dir)
 		if (0 == old_viewlist.count(ob)) { // 이동 전에 시야에 없었던 경우
 			g_clients[id].view_list.insert(ob); // 이동한 클라이언트(id)의 실제 뷰리스트에 넣는다
 			SendEnterPacket(id, ob); // 이동한 클라이언트(id)에게 시야에 들어온 ob를 enter하게 한다
-			
+
+			g_clients[ob].c_lock.lock();
 			if (false == IsNPC(ob)) {
 				if (0 == g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob의 뷰리스트에 id가 없었다면
 					g_clients[ob].view_list.insert(id); // 시야에 들어온 ob의 뷰리스트에 id를 넣어주고
+					g_clients[ob].c_lock.unlock();
 					SendEnterPacket(ob, id); // ob에게 id를 enter하게 한다
 				}
 				else {// 시야에 들어온 ob의 뷰리스트에 id가 있었다면 
+					g_clients[ob].c_lock.unlock();
 					SendMovePacket(ob, id); // ob에게 id를 move하게 한다
 				}
 			}
 		}
 		else {  // 이동 전에 시야에 있었던 경우
 			if (false == IsNPC(ob)) {
+				g_clients[ob].c_lock.lock();
 				if (0 != g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob가 id뷰리스트에 원래 있었ㄷ면
+					g_clients[ob].c_lock.unlock();
 					SendMovePacket(ob, id); // ob에게 id move 패킷 보냄
 				}
 				else // id가 ob의 뷰리스트에 없었다면
 				{
+					g_clients[ob].c_lock.unlock();
 					g_clients[ob].view_list.insert(id); // ob의 뷰리스트에 id 넣어줌 
 					SendEnterPacket(ob, id); // ob에게 id를 enter하게 한다
 				}
@@ -344,104 +352,35 @@ void ProcessMove(int id, char dir)
 	}
 	for (int ob : old_viewlist) { // 이동 후 old viewlist 안의 객체에 대해 처리 - leave 처리 할 건지, 유지할 건지
 		if (0 == new_viewlist.count(ob)) { // 이동 후 old viewlist에는 있는데 new viewlist에 없다 -> 시야에서 사라졌다
+			g_clients[id].c_lock.lock();
 			g_clients[id].view_list.erase(ob); // 이동한 id의 뷰리스트에서 ob를 삭제
+			g_clients[id].c_lock.unlock();
 			SendLeavePacket(id, ob); // id가 ob를 leave 하게끔
 			if (false == IsNPC(ob)) {
+				g_clients[ob].c_lock.lock();
 				if (0 != g_clients[ob].view_list.count(id)) { // ob의 뷰리스트에 id가 있었다면
 					g_clients[ob].view_list.erase(id); // ob의 뷰리스트에서도 id를 삭제
+					g_clients[ob].c_lock.unlock();
 					SendLeavePacket(ob, id); // ob가 id를 leave 하게끔
 				}
+				else
+					g_clients[ob].c_lock.unlock();
 			}
 		}
 	}
 
-
-	//// 시야 처리 (2차 시도)-----------------------------------
-	//// 1. old vl에 있고 new vl에도 있는 객체 // 서로가 
-	//for (auto pl : old_viewlist) {
-	//	if (0 == new_viewlist.count(pl)) continue;
-	//	if (0 < g_clients[pl].view_list.count(id)) {
-	//		SendMovePacket(pl, id);
-	//	}
-	//	else {
-	//		g_clients[pl].view_list.insert(id);
-	//		SendEnterPacket(pl, id);
-	//	}
-	//}
-	//// 2. old vl에 없고 new_vl에만 있는 객체
-	//for (auto pl : new_viewlist) {
-	//	if (0 < old_viewlist.count(pl)) continue;
-	//	g_clients[id].view_list.insert(pl);
-	//	SendEnterPacket(id, pl);
-	//	if (0 == g_clients[pl].view_list.count(id)) {
-	//		g_clients[pl].view_list.insert(id);
-	//		SendEnterPacket(pl, id);
-	//	}
-	//	else {
-	//		SendMovePacket(pl, id);
-	//	}
-	//}
-	//// 3. old vl에 있고 new vl에는 없는 플레이어
-	//for (auto pl : old_viewlist) {
-	//	if (0 < new_viewlist.count(pl)) continue;
-	//	g_clients[id].view_list.erase(pl);
-	//	SendLeavePacket(id, pl);
-	//	// SendLeavePacket(pl, id);
-	//	if (0 < g_clients[pl].view_list.count(id)) {
-	//		g_clients[pl].view_list.erase(id);
-	//		SendLeavePacket(pl, id);
-	//	}
-	//}
-
-
-	
-	// 시야 처리 (1차 시도) --------------------------------
-	////// 시야에 들어온 객체 처리
-	//for (int ob : new_viewlist) { // 뉴 뷰리스트에 있는 객체 ob를 갖다가
-	//	if (0 == old_viewlist.count(ob)) { // id의 올드 뷰리스트에 ob가 있었다면
-	//		g_clients[id].view_list.insert(ob);
-	//		SendEnterPacket(id, ob);
-	//		if (0 == g_clients[ob].view_list.count(id)) { // 내가 시야에 없다면
-	//			g_clients[ob].view_list.insert(id);
-	//			SendEnterPacket(ob, id);
-	//		}
-	//		else { // 있다면
-	//		   // 이미 상대방 뷰 리스트에 있으니까 무브 패킷만 보내면 됨
-	//			SendMovePacket(ob, id);
-	//		}
-	//	}
-	//	else { // 이전에 시야에 있었고, 이동 후에도 시야에 있는 객체
-	//	   // 계속 시야에 있었기 때문에 내가 가진 정보는 변함이 없음
-	//	   // 멀티 쓰레드라서
-	//		if (0 != g_clients[ob].view_list.count(id)) {
-	//			SendMovePacket(ob, id);
-	//		}
-	//		else {
-	//			g_clients[ob].view_list.insert(id);
-	//			SendEnterPacket(ob, id);
-	//		}
-	//	}
-	//}
-	//for (int ob : old_viewlist) { // 이전에는 시야에 있었는데, 이동 후에 없는
-	//	if (0 == new_viewlist.count(ob)) {
-	//		g_clients[id].view_list.erase(id);
-	//		SendLeavePacket(id, ob);
-	//		if (0 != g_clients[ob].view_list.count(id)) {
-	//			g_clients[ob].view_list.erase(id);
-	//			SendLeavePacket(ob, id);
-	//		}
-	//		else {} //다른 애가 이미 지웠네 ㄸㅋ!
-	//	}
-	//}
-	// 나한테만 알리지 말고 다른 플레이어들도 알게! 널리널리
-	//for (int i = 0; i < MAX_USER; ++i) {
-	//	if (true == g_clients[i].connected) {
-	//		SendMovePacket(i, id);
-	//	}
-	//}
-
-
+	// 주위 npc에게 player event를 pqcs로 보낸다
+	if (true == IsNPC(id)) { 
+		for (auto& npc : new_viewlist) {
+			if (false == IsNPC(npc)) continue;
+			OVER_EX* ex_over = new OVER_EX;
+			ex_over->object_id = id;
+			ex_over->op_mode = OP_PLAYER_MOVE_NOTIFY;
+			PostQueuedCompletionStatus(h_iocp, 1, npc, &ex_over->wsa_over);
+		}
+	}
 }
+
 void WorkerThread() {
 	// 반복
 	// - 쓰레드를 iocp thread pool에 등록 (GQCS)
@@ -473,7 +412,7 @@ void WorkerThread() {
 		{ // 새 클라이언트 accept
 			AddNewClient(static_cast<SOCKET>(over_ex->wsa_buf.len)); 
 		}
-			break;
+		break;
 		case OP_MODE_RECV:
 		{
 			if (io_size == 0) { // 클라이언트 접속 종료
@@ -486,10 +425,28 @@ void WorkerThread() {
 				ProcessRecv(key, io_size);
 			}
 		}
-			break;
+		break;
 		case OP_MODE_SEND:
+		{
 			delete over_ex;
-			break;
+		}
+		break;
+		case OP_RANDOM_MOVE:
+		{
+			RandomMoveNPC(key);
+		}
+		break;
+		case OP_PLAYER_MOVE_NOTIFY:
+		{
+			//	x 다름 y 다름, x 같음 y 다름, x 다름 y 같음
+			g_clients[key].c_lock.lock();
+			lua_getglobal(g_clients[key].L, "event_player_move");
+			lua_pushnumber(g_clients[key].L, over_ex->object_id);
+			lua_pcall(g_clients[key].L, 1, 1, 0);
+			g_clients[key].c_lock.unlock();
+			delete over_ex;
+		}
+		break;
 		}
 	}
 }
@@ -504,13 +461,16 @@ void TimerThread()
 				timer_queue.pop();
 
 				if (ev.event_id == OP_RANDOM_MOVE) {
-					RandomMoveNPC(ev.obj_id);
-					AddTimer(ev.obj_id, OP_RANDOM_MOVE, system_clock::now() + 1s);
+					//RandomMoveNPC(ev.obj_id);
+					//AddTimer(ev.obj_id, OP_RANDOM_MOVE, system_clock::now() + 1s);
+					OVER_EX* ex_over = new OVER_EX;
+					ex_over->op_mode = OP_RANDOM_MOVE;
+					PostQueuedCompletionStatus(h_iocp, 1, ev.obj_id, &ex_over->wsa_over);
 				}
 			}
 			else break;
 		}
-		this_thread::sleep_for(10ms);
+		this_thread::sleep_for(1ms);
 	}
 }
 
@@ -525,18 +485,6 @@ void AddNewClient(SOCKET ns)
 	//		break;
 	//}
 	//id_lock.unlock();
-	//// 최적화 후 ----
-	//atomic_int i = 0;
-	//bool connected = false;
-	//int compare_val = =1;
-	//for (; i < MAX_USER;) {
-	//	if (false == g_clients[i].connected){
-	//		int plus_i = i + 1;
-	//		atomic_compare_exchange_strong(&i, &compare_val, plus_i);
-	//		break;
-	//	}
-	//	atomic_compare_exchange_strong(&i, &compare_val, i+1);
-	//}
 	// 최적화 2 ----
 	int i = -1;
 	int compare_val = -1;
@@ -584,19 +532,19 @@ void AddNewClient(SOCKET ns)
 		DWORD flags = 0;
 		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0); // 소켓을 iocp에 등록
 		// Recv
-		// 최적화
-		//g_clients[i].c_lock.lock();
-		//int ret = 0;
-		//if (true == g_clients[i].connected) {
-		//	ret = WSARecv(g_clients[i].sock, &g_clients[i].m_recv_over.wsa_buf, 1, NULL, &flags, &(g_clients[i].m_recv_over.wsa_over), NULL);
-		//}
-		//g_clients[i].c_lock.unlock();
+		// 최적화 전
+		g_clients[i].c_lock.lock();
 		int ret = 0;
-		bool connected = true;
-		if (true == atomic_compare_exchange_strong(
-			&g_clients[i].connected, &connected, true)) {
+		if (true == g_clients[i].connected) {
 			ret = WSARecv(g_clients[i].sock, &g_clients[i].m_recv_over.wsa_buf, 1, NULL, &flags, &(g_clients[i].m_recv_over.wsa_over), NULL);
 		}
+		g_clients[i].c_lock.unlock();
+		// 최적화 후
+		//int ret = 0;
+		//bool connected = true;
+		//if (true == atomic_compare_exchange_strong(&g_clients[i].connected, &connected, true)) {
+		//	WSARecv(g_clients[i].sock, &g_clients[i].m_recv_over.wsa_buf, 1, NULL, 0, &(g_clients[i].m_recv_over.wsa_over), NULL);
+		//}
 		if (ret == SOCKET_ERROR) {
 			int error_no = WSAGetLastError();
 			if (error_no != ERROR_IO_PENDING) {
@@ -656,15 +604,15 @@ void SendPacket(int id, void* p)
 	send_over->wsa_buf.len = packet[0];
 	ZeroMemory(&send_over->wsa_over, sizeof(send_over->wsa_over));
 	//클라이언트의 소켓에 접근하므로 lock
-	//g_clients[id].c_lock.lock();
-	//if (true == g_clients[id].connected) // use 중이므로 sock이 살아있다
-	//	WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
-	//g_clients[id].c_lock.unlock();
-	// 최적화
-	bool connected = true;
-	if (true == atomic_compare_exchange_strong(&g_clients[id].connected, &connected, true)) {
+	g_clients[id].c_lock.lock();
+	if (true == g_clients[id].connected) // use 중이므로 sock이 살아있다
 		WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
-	}
+	g_clients[id].c_lock.unlock();
+	//// 최적화
+	//bool connected = true;
+	//if (true == atomic_compare_exchange_strong(&g_clients[id].connected, &connected, true)) {
+	//	WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
+	//}
 }
 
 void SendLeavePacket(int to_id, int id)
@@ -717,6 +665,16 @@ void SendMovePacket(int to_id, int id)
 	SendPacket(to_id, &p);
 }
 
+void SendChatPacket(int to_client, int id, char* mess)
+{
+	sc_packet_chat p;
+	p.id = id;
+	p.size = sizeof(p);
+	p.type = SC_CHAT;
+	strcpy_s(p.message, mess);
+	SendPacket(to_client, &p);
+}
+
 bool IsNear(int p1, int p2)
 {
 	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
@@ -745,9 +703,9 @@ void error_display(const char* msg, int err_no) {
 
 void InitializeNPC()
 {
-#ifdef _DEBUG
+//#ifdef _DEBUG
 	cout << "Initializing NPCs\n";
-#endif
+//#endif
 	for(int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
 		g_clients[i].x = rand() % WORLD_WIDTH;
 		g_clients[i].y = rand() % WORLD_HEIGHT;
@@ -755,15 +713,25 @@ void InitializeNPC()
 		sprintf_s(npc_name, "NPC%d", i);
 		strcpy_s(g_clients[i].name, npc_name);
 		g_clients[i].is_active = false;
+		// 가상 머신 생성
+		lua_State* L = g_clients[i].L = luaL_newstate();
+		luaL_openlibs(L);
+		int error = luaL_loadfile(L, "monster.lua");
+		error = lua_pcall(L, 0, 0, 0);
+		lua_getglobal(L, "set_uid");
+		lua_pushnumber(L, i);
+		lua_pcall(L, 1, 1, 0);
+		lua_register(L, "API_SendMessage", API_SendMessage);
+		lua_register(L, "API_get_x", API_get_x);
+		lua_register(L, "API_get_y", API_get_y);
 	}
-#ifdef _DEBUG
+//#ifdef _DEBUG
 	cout << "Initializing NPCs finishied.\n";
-#endif
+//#endif
 }
 
 void RandomMoveNPC(int id)
 {
-
 	// 이동 전 viewlist
 	unordered_set<int> o_vl;
 	for (int i = 0; i < MAX_USER; ++i) {
@@ -833,13 +801,26 @@ void RandomMoveNPC(int id)
 		}
 	}
 
+	if (true == n_vl.empty()) {
+		g_clients[id].is_active = false;
+	}
+	else{
+		AddTimer(id, OP_RANDOM_MOVE, system_clock::now() + 1s);
+	}
+
+	for (auto pc : n_vl) {
+		OVER_EX* over_ex = new OVER_EX;
+		over_ex->object_id = pc;
+		over_ex->op_mode = OP_PLAYER_MOVE_NOTIFY;
+		PostQueuedCompletionStatus(h_iocp, 1, id, &over_ex->wsa_over);
+	}
 }
 
 void WakeUpNPC(int id)
 {
-	if (false == g_clients[id].is_active) {
-		bool is_active = false;
-		atomic_compare_exchange_strong(&g_clients[id].is_active, &is_active, true);
+	bool b = false;
+	if (true == g_clients[id].is_active.compare_exchange_strong(b, true))
+	{
 		AddTimer(id, OP_RANDOM_MOVE, system_clock::now() + 1s);
 	}
 }
@@ -849,5 +830,34 @@ void AddTimer(int obj_id, int ev_type, system_clock::time_point t) {
 	timer_l.lock();
 	timer_queue.push(ev);
 	timer_l.unlock();
+}
+
+
+
+int API_SendMessage(lua_State* L) {
+	int my_id = (int)lua_tointeger(L, -3);
+	int user_id = (int)lua_tointeger(L, -2);
+	char* mess = (char*)lua_tostring(L, -1);
+
+	lua_pop(L, 3);
+
+	SendChatPacket(user_id, my_id, mess);
+	return 0;
+}
+
+int API_get_y(lua_State* L) {
+	int user_id = (int)lua_tointeger(L, -1);
+	lua_pop(L, 2);
+	int y = g_clients[user_id].y;
+	lua_pushnumber(L, y);
+	return 1;
+}
+
+int API_get_x(lua_State* L) {
+	int user_id = (int)lua_tointeger(L, -1);
+	lua_pop(L, 2);
+	int x = g_clients[user_id].x;
+	lua_pushnumber(L, x);
+	return 1;
 }
 

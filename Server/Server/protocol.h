@@ -13,16 +13,18 @@ constexpr int MIN_BUFFER = 1024;
 
 constexpr int MAX_ID_LEN = 10;
 constexpr int MAX_USER = 10000;
+constexpr int MAX_STR_LEN = 100;
 
 constexpr int VIEW_LIMIT = 8;
-constexpr int NUM_NPC = 200000;
+constexpr int NUM_NPC = 20000;
 
 #pragma pack (push, 1)
 
-constexpr char SC_LOGIN_OK = 1;
-constexpr char SC_MOVEPLAYER = 2;
-constexpr char SC_ENTER = 3;
-constexpr char SC_LEAVE = 4;
+constexpr char SC_LOGIN_OK = 0;
+constexpr char SC_MOVEPLAYER = 1;
+constexpr char SC_ENTER = 2;
+constexpr char SC_LEAVE = 3;
+constexpr char SC_CHAT = 4;
 
 
 constexpr char CS_LOGIN = 1;
@@ -79,6 +81,13 @@ struct cs_packet_move {
 	char type;
 	char direction;
 	int	  move_time;
+};
+
+struct sc_packet_chat {
+	char  size; 
+	char  type;
+	int id; 
+	char  message[MAX_STR_LEN];
 };
 
 

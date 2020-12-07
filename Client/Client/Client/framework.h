@@ -19,9 +19,11 @@
 #include <thread>
 #include <wchar.h>
 #include <mutex>
+#include <chrono>
 // 자체 헤더 파일
 #include "../../../Server/Server/protocol.h"
 using namespace std;
+using namespace chrono;
 
 // 라이브러리 추가
 #pragma comment(lib, "msimg32.lib")
@@ -54,10 +56,12 @@ typedef struct tagObject {
 	char *name;
 	RECT rect;
 	HBITMAP bitmap;
+	TCHAR chat_buf[MAX_STR_LEN] = L"";
+	high_resolution_clock::time_point timeout;
 }OBJ;
 
 // const
-constexpr int BUF_SIZE = 1024;
+constexpr int BUF_SIZE = 256;
 constexpr short PORT = 3500;
 
 

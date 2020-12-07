@@ -16,6 +16,7 @@ DWORD		in_packet_size = 0;
 int		saved_packet_size = 0;
 DWORD send_last_time = 0; // 마지막으로 send하고 얼마나 지났는지
 
+
 void ProcessPacket(char* ptr, MainGame* maingame)
 {
 	int packet_size = ptr[0];
@@ -104,6 +105,18 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pl.unlock();
 	}
 	break;
+	case SC_CHAT: 
+	{
+		sc_packet_chat* p = reinterpret_cast<sc_packet_chat*>(ptr);
+		int id = p->id;
+		WCHAR* wmess;
+		int nChars = MultiByteToWideChar(CP_ACP, 0, p->message, -1, NULL, 0);
+		wmess = new WCHAR[nChars];
+		MultiByteToWideChar(CP_ACP, 0, p->message, -1, (LPWSTR)wmess, nChars);
+		wcscpy_s(pPlayers[id].chat_buf, wmess);
+		pPlayers[id].timeout = high_resolution_clock::now() + 1s;
+	}
+	break;
 	default:
 	{
 		printf("Unknown Packet\n");
@@ -125,7 +138,7 @@ void RecvPacket(LPVOID classPtr) {
 			printf("Recv Error [%d]\n", err_code);
 			break;
 		}
-		BYTE* ptr = reinterpret_cast<BYTE*>(recv_buffer);
+		char* ptr = reinterpret_cast<char*>(recv_buffer);
 		while (0 != num_recv) {
 			if (0 == in_packet_size)
 				in_packet_size = ptr[0];
@@ -211,7 +224,7 @@ void MainGame::Render()
 	}
 	// render Players
 	for (int i = 0; i < MAX_USER + NUM_NPC; ++i) {
-		if(players[i].connected == false) continue;
+		if (players[i].connected == false) continue;
 		if (i < MAX_USER) { // Player
 			TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
 				players[i].rect.left + scrollX, players[i].rect.top + scrollY, /// 이미지를 출력할 위치 x,y
@@ -222,21 +235,21 @@ void MainGame::Render()
 				RGB(0, 255, 255) /// 투명하게 할 색상
 			);
 			// render Text(info)
-			if (i == myid) {
-				// 내 캐릭터 구분
-				TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y + 3 + scrollY, L"It's me!", lstrlen(L"It's me"));
-				playerptX = players[i].ptX; playerptY = players[i].ptY; // 배열 계속 읽는거 방지
-			}
-			// 플레이어 정보 출력
-			TCHAR lpOut[128]; // 좌표
-			wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
-			TextOut(hdcBuffer, players[i].rect.left  + scrollX, players[i].y - 25 + scrollY, lpOut, lstrlen(lpOut));
+			//if (i == myid) {
+			//	// 내 캐릭터 구분
+			//	TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y + 3 + scrollY, L"It's me!", lstrlen(L"It's me"));
+			//	playerptX = players[i].ptX; playerptY = players[i].ptY; // 배열 계속 읽는거 방지
+			//}
+			// 정보 출력
+			//TCHAR lpOut[128]; // 좌표
+			//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
+			//TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
 			if (players[i].name != nullptr) {
 				TCHAR lpNickname[MAX_NICKNAME];	// 닉네임
 				size_t convertedChars = 0;
 				size_t newsize = strlen(players[i].name) + 1;
 				mbstowcs_s(&convertedChars, lpNickname, newsize, players[i].name, _TRUNCATE);
-				TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y - 40 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+				TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
 			}
 		}
 		else { // NPC
@@ -248,19 +261,22 @@ void MainGame::Render()
 				20, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
 				RGB(0, 255, 255) /// 투명하게 할 색상
 			);
-			// 플레이어 정보 출력
-			TCHAR lpOut[128]; // 좌표
-			wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
-			TextOut(hdcBuffer, players[i].rect.left + 10 + scrollX, players[i].y - 25 + scrollY, lpOut, lstrlen(lpOut));
+			// 정보 출력
+			//TCHAR lpOut[128]; // 좌표
+			//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
+			//TextOut(hdcBuffer, players[i].rect.left + 10 + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
 			if (players[i].name != nullptr) {
 				TCHAR lpNickname[MAX_NICKNAME];	// 닉네임
 				size_t convertedChars = 0;
 				size_t newsize = strlen(players[i].name) + 1;
 				mbstowcs_s(&convertedChars, lpNickname, newsize, players[i].name, _TRUNCATE);
-				TextOut(hdcBuffer, players[i].rect.left + 5 + scrollX, players[i].y - 40 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+				TextOut(hdcBuffer, players[i].rect.left + 5 + scrollX, players[i].y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
 			}
 		}
-		
+		// chat message
+		if (high_resolution_clock::now() < players[i].timeout) {
+			TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y + scrollY, players[i].chat_buf, lstrlen(players[i].chat_buf));
+		}
 	}
 	// render Coordinates
 	int pointsCount = WORLD_WIDTH / 8; // 0, 8, 16, 24, .. 
