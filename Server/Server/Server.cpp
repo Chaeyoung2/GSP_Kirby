@@ -77,9 +77,10 @@ SOCKET g_listenSocket;
 OVER_EX g_accept_over; // accept용 overlapped 구조체
 priority_queue<event_type> timer_queue;
 mutex timer_l;
+mutex sector_l;
 
-#define S_VIEW VIEW_LIMIT * 2
-unordered_set<int> g_sector[S_VIEW][S_VIEW];
+#define S_SIZE 50
+unordered_set<int> g_sector[S_SIZE][S_SIZE];
 
 void error_display(const char* msg, int err_no);
 
@@ -185,19 +186,30 @@ void ProcessPacket(int id)
 			if (false == g_clients[i].connected) continue;
 			if (id == i) continue;
 			if (false == IsNear(i, id)) continue;
+			g_clients[i].c_lock.lock();
 			if (0 == g_clients[i].view_list.count(id)) {
 				g_clients[i].view_list.insert(id);
+				g_clients[i].c_lock.unlock();
 				SendEnterPacket(i, id);
 			}
+			else
+				g_clients[i].c_lock.unlock();
+			g_clients[id].c_lock.lock();
 			if (0 == g_clients[id].view_list.count(i)) {
 				g_clients[id].view_list.insert(i);
+				g_clients[id].c_lock.unlock();
 				SendEnterPacket(id, i);
+			}
+			else {
+				g_clients[id].c_lock.unlock();
 			}
 		}
 		// NPC
 		for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
 			if (false == IsNear(id, i)) continue;
+			g_clients[id].c_lock.lock();
 			g_clients[id].view_list.insert(i);
+			g_clients[id].c_lock.unlock();
 			SendEnterPacket(id, i);
 			WakeUpNPC(i);
 		}
@@ -205,8 +217,10 @@ void ProcessPacket(int id)
 	break;
 	case CS_MOVE:
 	{
+		g_clients[id].c_lock.lock();
 		cs_packet_move* p = reinterpret_cast<cs_packet_move*>(g_clients[id].m_packet_start);
 		g_clients[id].move_time = p->move_time;
+		g_clients[id].c_lock.unlock();
 		ProcessMove(id, p->direction);
 	}
 	break;
@@ -263,9 +277,14 @@ void ProcessRecv(int id, DWORD iosize)
 
 void ProcessMove(int id, char dir)
 {
+	// 이동 전 좌표
+	short sx = g_clients[id].sx;
+	short sy = g_clients[id].sy;
 	short y = g_clients[id].y;
 	short x = g_clients[id].x;
-
+	// 이동 전 뷰 리스트
+	unordered_set<int> old_viewlist = g_clients[id].view_list;
+	// 이동
 	switch (dir) {
 	case MV_UP:
 		if (y > 0) y--;
@@ -287,13 +306,22 @@ void ProcessMove(int id, char dir)
 		break;
 	}
 
-	// 이동 전 뷰 리스트
+	// 이동 후 좌표
 	g_clients[id].c_lock.lock();
-	unordered_set<int> old_viewlist = g_clients[id].view_list;
+	int cur_x = g_clients[id].x = x;
+	int cur_y = g_clients[id].y = y;
 	g_clients[id].c_lock.unlock();
-
-	g_clients[id].x = x;
-	g_clients[id].y = y;
+	int cur_sx = cur_x / S_SIZE;
+	int cur_sy = cur_y / S_SIZE;
+	// 이동 후 섹터
+	// sx, sy와 cur_sx, cur_sy가 동일하다면 -> 그대로
+	//											다르면 -> 이전 섹터에서 erase, 새로운 섹터에 insert
+	if (sx != cur_sx || sy != cur_sy) {
+		sector_l.lock();
+		g_sector[sx][sy].erase(id);
+		g_sector[cur_sx][cur_sy].insert(id);
+		sector_l.unlock();
+	}
 
 	// 나에게 알림
 	SendMovePacket(id, id);
@@ -301,14 +329,19 @@ void ProcessMove(int id, char dir)
 	// 뷰 리스트 처리
 	//// 이동 후 객체-객체가 서로 보이나 안 보이나 처리
 	unordered_set<int> new_viewlist; 
-	for (int i = 0; i < MAX_USER; ++i) {
+	//for (int i = 0; i < MAX_USER; ++i) {
+	for(auto i : g_sector[cur_sx][cur_sy]){
 		if (id == i) continue;
+		//g_clients[i].c_lock.lock();
 		if (false == g_clients[i].connected) continue;
+		//g_clients[i].c_lock.unlock();
 		if (true == IsNear(id, i)) { // i가 id와 가깝다면
 			new_viewlist.insert(i); // 뉴 뷰리스트에 i를 넣는다
 		}
 	}
-	for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
+//	for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
+	for(auto i : g_sector[cur_sx][cur_sy]){
+		if (false == IsNPC(i)) continue;
 		if (true == IsNear(id, i)) {
 			new_viewlist.insert(i);
 			WakeUpNPC(i);
@@ -318,33 +351,37 @@ void ProcessMove(int id, char dir)
 	// 시야 처리 (3차 시도)-------------------------------
 	for (int ob : new_viewlist) { // 이동 후 new viewlist (시야에 들어온) 객체에 대해 처리 - enter할 건지, move만 할 건지
 		if (0 == old_viewlist.count(ob)) { // 이동 전에 시야에 없었던 경우
+			g_clients[id].c_lock.lock();
 			g_clients[id].view_list.insert(ob); // 이동한 클라이언트(id)의 실제 뷰리스트에 넣는다
+			g_clients[id].c_lock.unlock();
 			SendEnterPacket(id, ob); // 이동한 클라이언트(id)에게 시야에 들어온 ob를 enter하게 한다
 
-			g_clients[ob].c_lock.lock();
 			if (false == IsNPC(ob)) {
 				if (0 == g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob의 뷰리스트에 id가 없었다면
+					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.insert(id); // 시야에 들어온 ob의 뷰리스트에 id를 넣어주고
 					g_clients[ob].c_lock.unlock();
 					SendEnterPacket(ob, id); // ob에게 id를 enter하게 한다
 				}
 				else {// 시야에 들어온 ob의 뷰리스트에 id가 있었다면 
-					g_clients[ob].c_lock.unlock();
+					//g_clients[ob].c_lock.unlock();
 					SendMovePacket(ob, id); // ob에게 id를 move하게 한다
 				}
 			}
 		}
 		else {  // 이동 전에 시야에 있었던 경우
 			if (false == IsNPC(ob)) {
-				g_clients[ob].c_lock.lock();
+				//g_clients[ob].c_lock.lock();
 				if (0 != g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob가 id뷰리스트에 원래 있었ㄷ면
-					g_clients[ob].c_lock.unlock();
+					//g_clients[ob].c_lock.unlock();
 					SendMovePacket(ob, id); // ob에게 id move 패킷 보냄
 				}
 				else // id가 ob의 뷰리스트에 없었다면
 				{
-					g_clients[ob].c_lock.unlock();
+					//g_clients[ob].c_lock.unlock();
+					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.insert(id); // ob의 뷰리스트에 id 넣어줌 
+					g_clients[ob].c_lock.unlock();
 					SendEnterPacket(ob, id); // ob에게 id를 enter하게 한다
 				}
 			}
@@ -357,14 +394,15 @@ void ProcessMove(int id, char dir)
 			g_clients[id].c_lock.unlock();
 			SendLeavePacket(id, ob); // id가 ob를 leave 하게끔
 			if (false == IsNPC(ob)) {
-				g_clients[ob].c_lock.lock();
+				//g_clients[ob].c_lock.lock();
 				if (0 != g_clients[ob].view_list.count(id)) { // ob의 뷰리스트에 id가 있었다면
+					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.erase(id); // ob의 뷰리스트에서도 id를 삭제
 					g_clients[ob].c_lock.unlock();
 					SendLeavePacket(ob, id); // ob가 id를 leave 하게끔
 				}
-				else
-					g_clients[ob].c_lock.unlock();
+				//else
+					//g_clients[ob].c_lock.unlock();
 			}
 		}
 	}
@@ -458,7 +496,9 @@ void TimerThread()
 			if (false == timer_queue.empty()) {
 				event_type ev = timer_queue.top();
 				if (ev.wakeup_time > system_clock::now()) break;
+				timer_l.lock();
 				timer_queue.pop();
+				timer_l.unlock();
 
 				if (ev.event_id == OP_RANDOM_MOVE) {
 					//RandomMoveNPC(ev.obj_id);
@@ -526,8 +566,17 @@ void AddNewClient(SOCKET ns)
 		g_clients[i].m_recv_over.wsa_buf.len = sizeof(g_clients[i].m_recv_over.iocp_buf);
 		ZeroMemory(&g_clients[i].m_recv_over.wsa_over, sizeof(g_clients[i].m_recv_over.wsa_over));
 		g_clients[i].m_recv_start = g_clients[i].m_recv_over.iocp_buf; // 이 위치에서 받기 시작한다.
-		g_clients[i].x = rand() % WORLD_WIDTH;
-		g_clients[i].y = rand() % WORLD_HEIGHT;
+		g_clients[i].c_lock.lock();
+		int x = g_clients[i].x = rand() % WORLD_WIDTH;
+		int y = g_clients[i].y = rand() % WORLD_HEIGHT;
+		// 섹터
+		int sx = g_clients[i].sx = x / S_SIZE;
+		int sy = g_clients[i].sy = y / S_SIZE;
+		g_clients[i].c_lock.unlock();
+		// 섹터에 정보 넣기
+		sector_l.lock();
+		g_sector[sx][sy].insert(i);
+		sector_l.unlock();
 		// 소켓을 iocp에 등록
 		DWORD flags = 0;
 		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0); // 소켓을 iocp에 등록
@@ -646,9 +695,9 @@ void SendEnterPacket(int to_id, int new_id)
 	p.type = SC_ENTER;
 	p.x = g_clients[new_id].x;
 	p.y = g_clients[new_id].y;
-	g_clients[new_id].c_lock.lock();
+	//g_clients[new_id].c_lock.lock();
 	strcpy_s(p.name, g_clients[new_id].name);
-	g_clients[new_id].c_lock.unlock();
+	//g_clients[new_id].c_lock.unlock();
 	p.o_type = 0;
 	SendPacket(to_id, &p);
 }
@@ -707,12 +756,21 @@ void InitializeNPC()
 	cout << "Initializing NPCs\n";
 //#endif
 	for(int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
-		g_clients[i].x = rand() % WORLD_WIDTH;
-		g_clients[i].y = rand() % WORLD_HEIGHT;
+		int x = g_clients[i].x = rand() % WORLD_WIDTH;
+		int y = g_clients[i].y = rand() % WORLD_HEIGHT;
+		// 섹터
+		int sx = g_clients[i].sx = x / S_SIZE;
+		int sy = g_clients[i].sy = y / S_SIZE;
+		// 섹터에 정보 넣기
+		sector_l.lock();
+		g_sector[sx][sy].insert(i);
+		sector_l.unlock();
 		char npc_name[50];
 		sprintf_s(npc_name, "NPC%d", i);
+		g_clients[i].c_lock.lock();
 		strcpy_s(g_clients[i].name, npc_name);
 		g_clients[i].is_active = false;
+		g_clients[i].c_lock.unlock();
 		// 가상 머신 생성
 		lua_State* L = g_clients[i].L = luaL_newstate();
 		luaL_openlibs(L);
@@ -732,16 +790,19 @@ void InitializeNPC()
 
 void RandomMoveNPC(int id)
 {
+	// 이동 전 좌표
+	int x = g_clients[id].x;
+	int y = g_clients[id].y;
+	int sx = x / S_SIZE;
+	int sy = y / S_SIZE;
 	// 이동 전 viewlist
 	unordered_set<int> o_vl;
-	for (int i = 0; i < MAX_USER; ++i) {
+	//for (int i = 0; i < MAX_USER; ++i) {
+	for (auto i : g_sector[sx][sy]) {
 		if (false == g_clients[i].connected) continue;
 		if (true == IsNear(id, i)) 
 			o_vl.insert(i);
 	}
-	// 아동 전 좌표
-	int x = g_clients[id].x;
-	int y = g_clients[id].y;
 	// 이동
 	switch (rand() % 4) {
 	case 0:
@@ -762,11 +823,24 @@ void RandomMoveNPC(int id)
 		break;
 	}
 	// 이동 후 좌표
-	g_clients[id].x = x;
-	g_clients[id].y = y;
+	int cur_x = g_clients[id].x = x;
+	int cur_y = g_clients[id].y = y;
+	int cur_sx = cur_x / S_SIZE;
+	int cur_sy = cur_y / S_SIZE;
+
+	// sector 처리 -------------------
+	// sx, sy와 cur_sx, cur_sy가 동일하다면 -> 그대로
+	//											다르면 -> 이전 섹터에서 erase, 새로운 섹터에 insert
+	if (sx != cur_sx || sy != cur_sy) {
+		sector_l.lock();
+		g_sector[sx][sy].erase(id);
+		g_sector[cur_sx][cur_sy].insert(id);
+		sector_l.unlock();
+	}
+	// view list 처리 (sector O) ----------------- - 섹터 안의 뷰리스트
 	// 이동 후 viewlist
 	unordered_set<int> n_vl;
-	for (int i = 0; i < MAX_USER; ++i) {
+	for(auto i : g_sector[cur_sx][cur_sy]){
 		if (id == i) continue;
 		if (false == g_clients[i].connected) continue;
 		if (true == IsNear(id, i))
@@ -775,31 +849,89 @@ void RandomMoveNPC(int id)
 	// 이동 후 처리
 	for (auto pl : o_vl) {
 		if (0 < n_vl.count(pl)) {
-			if (0 < g_clients[pl].view_list.count(id))
+			//g_clients[pl].c_lock.lock();
+			if (0 < g_clients[pl].view_list.count(id)) {
+				//g_clients[pl].c_lock.unlock();
 				SendMovePacket(pl, id);
+			}
 			else {
+				g_clients[pl].c_lock.lock();
 				g_clients[pl].view_list.insert(id);
+				g_clients[pl].c_lock.unlock();
+				//g_clients[pl].c_lock.unlock();
 				SendEnterPacket(pl, id);
 			}
 		}
 		else {
+			//g_clients[pl].c_lock.lock();
 			if (0 < g_clients[pl].view_list.count(id)) {
+				g_clients[pl].c_lock.lock();
 				g_clients[pl].view_list.erase(id);
+				g_clients[pl].c_lock.unlock();
+				//g_clients[pl].c_lock.unlock();
 				SendLeavePacket(pl, id);
 			}
 		}
 	}
 	for (auto pl : n_vl) {
+		//g_clients[pl].c_lock.lock();
 		if (0 == g_clients[pl].view_list.count(pl)) {
 			if (0 == g_clients[pl].view_list.count(id)) {
+				g_clients[pl].c_lock.lock();
 				g_clients[pl].view_list.insert(id);
+				g_clients[pl].c_lock.unlock();
+				//g_clients[pl].c_lock.unlock();
 				SendEnterPacket(pl, id);
 			}
 			else {
+				//g_clients[pl].c_lock.unlock();
 				SendMovePacket(pl, id);
 			}
 		}
+		else {
+
+			//g_clients[pl].c_lock.unlock();
+		}
 	}
+
+	//// view list 처리 (sector X) ------------------
+	//// 이동 후 viewlist
+	//unordered_set<int> n_vl;
+	//for (int i = 0; i < MAX_USER; ++i) {
+	//	if (id == i) continue;
+	//	if (false == g_clients[i].connected) continue;
+	//	if (true == IsNear(id, i))
+	//		n_vl.insert(i);
+	//}
+	//// 이동 후 처리
+	//for (auto pl : o_vl) {
+	//	if (0 < n_vl.count(pl)) {
+	//		if (0 < g_clients[pl].view_list.count(id))
+	//			SendMovePacket(pl, id);
+	//		else {
+	//			g_clients[pl].view_list.insert(id);
+	//			SendEnterPacket(pl, id);
+	//		}
+	//	}
+	//	else {
+	//		if (0 < g_clients[pl].view_list.count(id)) {
+	//			g_clients[pl].view_list.erase(id);
+	//			SendLeavePacket(pl, id);
+	//		}
+	//	}
+	//}
+	//for (auto pl : n_vl) {
+	//	if (0 == g_clients[pl].view_list.count(pl)) {
+	//		if (0 == g_clients[pl].view_list.count(id)) {
+	//			g_clients[pl].view_list.insert(id);
+	//			SendEnterPacket(pl, id);
+	//		}
+	//		else {
+	//			SendMovePacket(pl, id);
+	//		}
+	//	}
+	//}
+	//---------------------------------
 
 	if (true == n_vl.empty()) {
 		g_clients[id].is_active = false;

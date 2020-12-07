@@ -49,19 +49,19 @@ extern HWND g_hwnd;
 typedef struct tagObject {
 	int id = -1;
 	bool connected = false;
-	float x;
-	float y;
+	//short x;
+	//short y;
 	short ptX;
 	short ptY;
 	char *name;
-	RECT rect;
-	HBITMAP bitmap;
+	//RECT rect;
+	//HBITMAP bitmap;
 	TCHAR chat_buf[MAX_STR_LEN] = L"";
 	high_resolution_clock::time_point timeout;
 }OBJ;
 
 // const
-constexpr int BUF_SIZE = 256;
+constexpr int BUF_SIZE = 200;
 constexpr short PORT = 3500;
 
 

@@ -36,10 +36,10 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pPlayers[packet_id].ptX = ptX;
 		pPlayers[packet_id].ptY = ptY;
 		pPlayers[packet_id].connected = true;
-		HBITMAP* hBitmaps = maingame->getBitmaps();
-		pPlayers[packet_id].bitmap = hBitmaps[2];
+		//HBITMAP* hBitmaps = maingame->getBitmaps();
+		//pPlayers[packet_id].bitmap = hBitmaps[2];
 		maingame->setObjectPoint(packet_id, (float)ptX, (float)ptY);
-		maingame->setObjectRect(packet_id);
+		//maingame->setObjectRect(packet_id);
 		// 로그인 ok 사인 받으면
 		int t_id = GetCurrentProcessId();
 		char tempBuffer[MAX_NICKNAME] = "";
@@ -63,7 +63,7 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pPlayers[packet_id].ptY = ptY;
 		pl.unlock();
 		maingame->setObjectPoint(packet_id, (float)ptX, (float)ptY);
-		maingame->setObjectRect(packet_id);
+		//maingame->setObjectRect(packet_id);
 		if(myid == packet_id)
 			maingame->setScroll(ptX, ptY); // 좌표에 따라 스크롤 설정
 
@@ -81,17 +81,12 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pPlayers[packet_id].id = packet_id;
 		pPlayers[packet_id].ptX = packet->x;
 		pPlayers[packet_id].ptY = packet->y;
-		HBITMAP* hBitmaps = maingame->getBitmaps();
-		if (packet_id < MAX_USER) // player bitmap
-			pPlayers[packet_id].bitmap = hBitmaps[2];
-		else // NPC bitmap
-			pPlayers[packet_id].bitmap = hBitmaps[3]; 
 		pPlayers[packet_id].name = new char[MAX_NICKNAME];
 		ZeroMemory(pPlayers[packet_id].name, MAX_NICKNAME);
 		memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
 		pl.unlock();
 		maingame->setObjectPoint(packet_id, packet->x, packet->y);
-		maingame->setObjectRect(packet_id);
+		// maingame->setObjectRect(packet_id);
 	}
 	break;
 	case SC_LEAVE:
@@ -176,7 +171,7 @@ void MainGame::Start()
 	LoadBitmaps();
 
 	setObjectPoint(0, 0, 0);
-	setObjectRect(0);
+	//setObjectRect(0);
 
 	InitNetwork();
 
@@ -225,21 +220,29 @@ void MainGame::Render()
 	// render Players
 	for (int i = 0; i < MAX_USER + NUM_NPC; ++i) {
 		if (players[i].connected == false) continue;
+		OBJ obj = players[i];
+		short x = players[i].ptX * TILESIZE + TILESIZE * 0.5f;
+		short y = players[i].ptY * TILESIZE + TILESIZE * 0.5f;
+		RECT rc;
+		rc.left = long(x - PLAYERCX * 0.5f);
+		rc.right = long(x + PLAYERCX * 0.5f);
+		rc.top = long(y - PLAYERCY * 0.5f);
+		rc.bottom = long(y + PLAYERCY * 0.5f);
 		if (i < MAX_USER) { // Player
-			TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-				players[i].rect.left + scrollX, players[i].rect.top + scrollY, /// 이미지를 출력할 위치 x,y
-				PLAYERCX, PLAYERCY, /// 출력할 이미지의 너비, 높이
-				hdcPlayer, /// 이미지 핸들
-				0, 0, /// 가져올 이미지의 시작지점 x,y 
-				30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
-				RGB(0, 255, 255) /// 투명하게 할 색상
+			TransparentBlt(hdcBuffer, 
+				rc.left + scrollX, rc.top + scrollY, 
+				PLAYERCX, PLAYERCY, 
+				hdcPlayer, 
+				0, 0,
+				30, 30,
+				RGB(0, 255, 255)
 			);
 			// render Text(info)
-			//if (i == myid) {
-			//	// 내 캐릭터 구분
-			//	TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y + 3 + scrollY, L"It's me!", lstrlen(L"It's me"));
-			//	playerptX = players[i].ptX; playerptY = players[i].ptY; // 배열 계속 읽는거 방지
-			//}
+			if (i == myid) {
+				// 내 캐릭터 구분
+				//TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y + 3 + scrollY, L"It's me!", lstrlen(L"It's me"));
+				playerptX = obj.ptX; playerptY =obj.ptY; // 배열 계속 읽는거 방지
+			}
 			// 정보 출력
 			//TCHAR lpOut[128]; // 좌표
 			//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
@@ -247,14 +250,14 @@ void MainGame::Render()
 			if (players[i].name != nullptr) {
 				TCHAR lpNickname[MAX_NICKNAME];	// 닉네임
 				size_t convertedChars = 0;
-				size_t newsize = strlen(players[i].name) + 1;
-				mbstowcs_s(&convertedChars, lpNickname, newsize, players[i].name, _TRUNCATE);
-				TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+				size_t newsize = strlen(obj.name) + 1;
+				mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
+				TextOut(hdcBuffer, rc.left + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
 			}
 		}
 		else { // NPC
 			TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-				players[i].rect.left + scrollX, players[i].rect.top + scrollY, /// 이미지를 출력할 위치 x,y
+				rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
 				MON1CX, MON1CY, /// 출력할 이미지의 너비, 높이
 				hdcNPC, /// 이미지 핸들
 				0, 0, /// 가져올 이미지의 시작지점 x,y 
@@ -265,17 +268,17 @@ void MainGame::Render()
 			//TCHAR lpOut[128]; // 좌표
 			//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
 			//TextOut(hdcBuffer, players[i].rect.left + 10 + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
-			if (players[i].name != nullptr) {
+			if (obj.name != nullptr) {
 				TCHAR lpNickname[MAX_NICKNAME];	// 닉네임
 				size_t convertedChars = 0;
-				size_t newsize = strlen(players[i].name) + 1;
-				mbstowcs_s(&convertedChars, lpNickname, newsize, players[i].name, _TRUNCATE);
-				TextOut(hdcBuffer, players[i].rect.left + 5 + scrollX, players[i].y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+				size_t newsize = strlen(obj.name) + 1;
+				mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
+				TextOut(hdcBuffer, rc.left + 5 + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
 			}
 		}
 		// chat message
-		if (high_resolution_clock::now() < players[i].timeout) {
-			TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y + scrollY, players[i].chat_buf, lstrlen(players[i].chat_buf));
+		if (high_resolution_clock::now() < obj.timeout) {
+			TextOut(hdcBuffer, rc.left + scrollX, y + scrollY, obj.chat_buf, lstrlen(obj.chat_buf));
 		}
 	}
 	// render Coordinates
@@ -379,10 +382,10 @@ void MainGame::InputKeyState(int key)
 void MainGame::setObjectPoint(int id, float ptX, float ptY)
 {
 	// 이젠 멀티플레이어니까 배열에 접근 !
-	players[id].ptX = ptX;
-	players[id].ptY = ptY;
-	players[id].x = ptX * TILESIZE + TILESIZE * 0.5f;
-	players[id].y = ptY * TILESIZE + TILESIZE * 0.5f;
+	//players[id].ptX = ptX;
+	//players[id].ptY = ptY;
+	//players[id].x = ptX * TILESIZE + TILESIZE * 0.5f;
+	//players[id].y = ptY * TILESIZE + TILESIZE * 0.5f;
 	//// 체스판에 맞게 // point에 따라서 위치 설정
 	//player.x = player.ptX * TILESIZE + TILESIZE * 0.5f;
 	//player.y = player.ptY * TILESIZE + TILESIZE * 0.5f;
@@ -390,16 +393,11 @@ void MainGame::setObjectPoint(int id, float ptX, float ptY)
 
 void MainGame::setObjectRect(int id)
 {
-	// 이젠 멀티플레이어니까 배열에 접근 !
-	players[id].rect.left = long(players[id].x - PLAYERCX * 0.5f);
-	players[id].rect.right = long(players[id].x + PLAYERCX * 0.5f);
-	players[id].rect.top = long(players[id].y - PLAYERCY * 0.5f);
-	players[id].rect.bottom = long(players[id].y + PLAYERCY * 0.5f);
-	//// rect 설정해 두면 TranasparentBlt 할 때 유용함
-	//player.rect.left = long(player.x - PLAYERCX * 0.5f);
-	//player.rect.right = long(player.x + PLAYERCX * 0.5f);
-	//player.rect.top = long(player.y - PLAYERCY * 0.5f);
-	//player.rect.bottom = long(player.y + PLAYERCY * 0.5f);
+	//// 이젠 멀티플레이어니까 배열에 접근 !
+	//players[id].rect.left = long(players[id].x - PLAYERCX * 0.5f);
+	//players[id].rect.right = long(players[id].x + PLAYERCX * 0.5f);
+	//players[id].rect.top = long(players[id].y - PLAYERCY * 0.5f);
+	//players[id].rect.bottom = long(players[id].y + PLAYERCY * 0.5f);
 }
 
 void MainGame::setScroll(int ptX, int ptY)

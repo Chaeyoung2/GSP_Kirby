@@ -13,10 +13,10 @@ constexpr int MIN_BUFFER = 1024;
 
 constexpr int MAX_ID_LEN = 10;
 constexpr int MAX_USER = 10000;
-constexpr int MAX_STR_LEN = 100;
+constexpr int MAX_STR_LEN = 32;
 
 constexpr int VIEW_LIMIT = 8;
-constexpr int NUM_NPC = 20000;
+constexpr int NUM_NPC = 200000;
 
 #pragma pack (push, 1)
 
