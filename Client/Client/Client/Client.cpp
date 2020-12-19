@@ -189,11 +189,22 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    static char str[1024];
     switch (message)
     {
     case WM_DESTROY:
         PostQuitMessage(0);
         break;
+    case WM_CHAR: 
+    {
+        int len = strlen(str);
+        str[len] = (TCHAR)wParam;
+        str[len + 1] = 0;
+        if (wParam == 'a' || wParam == 'A') {
+            mainGame.InputKeyState(4); // attack
+        }
+    }
+    break;
     case WM_KEYDOWN:
     {
         switch (wParam) {

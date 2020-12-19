@@ -50,11 +50,11 @@ struct client_info {
 	int id = -1;
 	char name[MAX_ID_LEN];
 	short x, y;
+	short hp;
 	lua_State* L;
 	SOCKET sock = -1;
 	atomic_bool connected = false;
 	atomic_bool is_active;
-	char oType;
 	unsigned char* m_packet_start;
 	unsigned char* m_recv_start;
 	//mutex vl;
@@ -100,6 +100,7 @@ void AddTimer(int obj_id, int ev_type, system_clock::time_point t);
 void ProcessPacket(int id);
 void ProcessRecv(int id, DWORD iosize);
 void ProcessMove(int id, char dir);
+void ProcessAttack(int id);
 
 void WorkerThread();
 void TimerThread();
@@ -235,6 +236,11 @@ void ProcessPacket(int id)
 		g_clients[id].move_time = p->move_time;
 		g_clients[id].c_lock.unlock();
 		ProcessMove(id, p->direction);
+	}
+	break;
+	case CS_ATTACK:
+	{
+		ProcessAttack(id);
 	}
 	break;
 	default:
@@ -432,6 +438,40 @@ void ProcessMove(int id, char dir)
 		ex_over->op_mode = OP_PLAYER_MOVE_NOTIFY;
 		PostQueuedCompletionStatus(h_iocp, 1, npc, &ex_over->wsa_over);
 	}
+}
+
+void ProcessAttack(int id) {
+	// 클라이언트 id가 공격 시도.
+	short x[4], y[4]; // 0 up, 1 down, 2 left, 3 right
+	short id_x = g_clients[id].x, id_y = g_clients[id].y;
+	for (int dir = 0; dir < 4; ++dir) {
+		if (dir == 0) {
+			x[dir] = id_x;
+			y[dir] = id_y - 1;
+		} else if (dir == 1) {
+			x[dir] = id_x;
+			y[dir] = id_y + 1;
+		} else if (dir == 2) {
+			x[dir] = id_x - 1;
+			y[dir] = id_y;
+		} else if (dir == 3) {
+			x[dir] = id_x + 1;
+			y[dir] = id_y;
+		}
+	}
+
+	unordered_set<int> vl = g_clients[id].view_list;
+	// 플레이어 공격과 npc의 충돌 검사
+	for (auto i : vl) {
+		if (false == IsNPC(i)) continue;
+		for (int dir = 0; dir < 4; ++dir) {
+			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
+				// 충돌
+				g_clients[i].hp -= PLAYER_ATTACKDAMAGE;
+			}
+		}
+	}
+
 }
 
 void WorkerThread() {
@@ -692,7 +732,7 @@ void SendLoginOK(int id)
 {
 	sc_packet_login_ok p;
 	p.exp = 0;
-	p.hp = 100;
+	p.hp = MAX_PLAYERHP;
 	p.id = id;
 	p.level = 1;
 	p.size = sizeof(p);
@@ -752,7 +792,7 @@ bool IsCollide(int p1, int p2) {
 
 bool IsNPC(int p1)
 {
-	return p1 >= MAX_USER && p1 < NUM_NPC;
+	return p1 >= MAX_USER && p1 < NUM_NPC + MAX_USER;
 }
 
 bool IsObstacle(int p1) {
@@ -793,6 +833,7 @@ void InitializeNPC()
 		g_clients[i].c_lock.lock();
 		strcpy_s(g_clients[i].name, npc_name);
 		g_clients[i].is_active = false;
+		g_clients[i].hp = MAX_MONSTERHP;
 		g_clients[i].c_lock.unlock();
 		// 가상 머신 생성
 		lua_State* L = g_clients[i].L = luaL_newstate();
@@ -840,6 +881,26 @@ void RandomMoveNPC(int id)
 	int y = g_clients[id].y;
 	int sx = x / S_SIZE;
 	int sy = y / S_SIZE;
+
+	// 이동 전에 hp 확인
+	if (g_clients[id].hp <= 0) {
+		g_clients[id].is_active = false;
+		g_clients[id].connected = false;
+		int sx = g_clients[id].sx = x / S_SIZE;
+		int sy = g_clients[id].sy = y / S_SIZE;
+		// 섹터에서 삭제
+		sector_l.lock();
+		g_sector[sx][sy].erase(id);
+		sector_l.unlock();
+		for (auto i : g_sector[sx][sy]) {
+			if (true == IsNPC(i)) continue;
+			if (true == IsObstacle(i)) continue;
+			SendLeavePacket(i, id); // player에게 npc가 leave 하게끔
+			cout << "몬스터 " << id << "(이)가 사망했습니다." << endl;
+		}
+		return;
+	}
+
 	// 이동 전 viewlist
 	unordered_set<int> o_vl;
 	//for (int i = 0; i < MAX_USER; ++i) {

@@ -20,6 +20,7 @@
 #include <wchar.h>
 #include <mutex>
 #include <chrono>
+#include <list>
 // 자체 헤더 파일
 #include "../../../Server/Server/protocol.h"
 using namespace std;
@@ -67,6 +68,16 @@ typedef struct tagObject {
 	TCHAR chat_buf[MAX_STR_LEN] = L"";
 	high_resolution_clock::time_point timeout;
 }OBJ;
+
+typedef struct tagBullet {
+	tagBullet() {}
+	tagBullet(short _x, short _y, short _t)
+		: x(_x), y(_y), timeout(_t) { }
+	short x;
+	short y;
+	short timeout;
+	short cur_time = 0;
+}BULLET;
 
 // const
 constexpr int BUF_SIZE = 200;

@@ -199,12 +199,14 @@ void MainGame::Render()
 	HDC hdcPlayer = CreateCompatibleDC(hdcMain);
 	HDC hdcNPC = CreateCompatibleDC(hdcMain);
 	HDC hdcObstacle = CreateCompatibleDC(hdcMain);
+	HDC hdcBullet = CreateCompatibleDC(hdcMain);
 
 	SelectObject(hdcBuffer, bitmaps[0]);
 	SelectObject(hdcBackGround, bitmaps[1]);
 	SelectObject(hdcPlayer, bitmaps[2]);
 	SelectObject(hdcNPC, bitmaps[3]);
 	SelectObject(hdcObstacle, bitmaps[4]);
+	SelectObject(hdcBullet, bitmaps[5]);
 
 	int playerptX = 0, playerptY = 0;
 
@@ -308,9 +310,28 @@ void MainGame::Render()
 			}
 		}
 	}
+	// render Bullets
+	{
+		for (auto iter = bulletList.begin(); iter != bulletList.end();) {
+			float x = (iter->x) * TILESIZE + TILESIZE * 0.5f;
+			float y = (iter->y) * TILESIZE + TILESIZE * 0.5f;
+			RECT rc;
+			rc.left = long(x - 30 * 0.5f);
+			rc.right = long(x + 30 * 0.5f);
+			rc.top = long(y - 30 * 0.5f);
+			rc.bottom = long(y + 30 * 0.5f);
+			TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, 30, 30, hdcBullet, 0, 0,	30, 30,	RGB(0, 255, 255));
+			if (++(iter->cur_time) > iter->timeout) {
+				iter = bulletList.erase(iter);
+			}
+			else
+				++iter;
+		}
+	}
 	// render BackBuffer at MainDC (Double Buffering)
 	BitBlt(hdcMain, 0, 0, WINCX, WINCY, hdcBuffer, 0, 0, SRCCOPY);
 
+	DeleteDC(hdcBullet);
 	DeleteDC(hdcObstacle);
 	DeleteDC(hdcNPC);
 	DeleteDC(hdcPlayer);
@@ -366,11 +387,22 @@ void MainGame::InputKeyState(int key)
 		ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
 	}
 	else if(key == KEY_ATTACK) {
+		// Send
 		cs_packet_attack* p = reinterpret_cast<cs_packet_attack*>(send_buffer);
 		p->size = sizeof(p);
 		send_wsabuf.len = sizeof(p);
 		DWORD iobyte;
 		p->type = CS_ATTACK;
+		ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
+		// bullet list에 4개 추가
+		BULLET b0(players[myid].ptX, players[myid].ptY - 1, 30);
+		BULLET b1(players[myid].ptX, players[myid].ptY + 1, 30);
+		BULLET b2(players[myid].ptX - 1, players[myid].ptY, 30);
+		BULLET b3(players[myid].ptX + 1, players[myid].ptY, 30);
+		bulletList.push_back(b0);
+		bulletList.push_back(b1);
+		bulletList.push_back(b2);
+		bulletList.push_back(b3);
 	}
 
 	if (ret) {
@@ -477,6 +509,15 @@ void MainGame::LoadBitmaps()
 	}
 	else
 		bitmaps[4] = tempBitmap;
+
+	// Bullet
+	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/Bullet.bmp", IMAGE_BITMAP, 30, 30, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (NULL == tempBitmap) {
+		MessageBox(g_hwnd, L"Image/Bullet.bmp", L"Failed (LoadImage)", MB_OK);
+		return;
+	}
+	else
+		bitmaps[5] = tempBitmap;
 }
 
 void MainGame::InitNetwork()
@@ -558,6 +599,7 @@ void MainGame::Release()
 	DeleteObject(bitmaps[2]);
 	DeleteObject(bitmaps[3]);
 	DeleteObject(bitmaps[4]);
+	DeleteObject(bitmaps[5]);
 	
 	closesocket(serverSocket);
 	WSACleanup();

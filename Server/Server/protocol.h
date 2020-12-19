@@ -12,9 +12,10 @@ constexpr int VIEW_LIMIT = 7;				// 시야 반지름, 상대방과 사이에 6개의 타일이 있
 constexpr int NUM_NPC = 10000;
 
 constexpr int NUM_OBSTACLE = 10000;
-constexpr int OB_PLAYER = 0;
-constexpr int OB_MONSTER = 1;
-constexpr int OB_OBSTACLE = 2;
+
+constexpr int MAX_MONSTERHP = 40;
+constexpr int MAX_PLAYERHP = 100;
+constexpr int PLAYER_ATTACKDAMAGE = 20;
 
 #pragma pack (push, 1)
 
