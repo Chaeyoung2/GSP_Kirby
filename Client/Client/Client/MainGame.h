@@ -29,10 +29,10 @@ public:
 	}
 private:
 	HDC hdc;
-	HBITMAP bitmaps[4];
+	HBITMAP bitmaps[5];
 private:
 	wchar_t mynickname[128] = L"";
-	OBJ players[MAX_USER+NUM_NPC] = {};
+	OBJ players[MAX_USER+NUM_NPC+NUM_OBSTACLE] = {};
 /// ////////////////////////////////////////////////////////////
 public:
 	void InitNetwork();

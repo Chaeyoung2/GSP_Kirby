@@ -24,6 +24,8 @@ using namespace chrono;
 #pragma comment(lib, "lua54.lib")
 
 constexpr int KEY_SERVER = 1000000; // 클라이언트 아이디와 헷갈리지 않게 큰 값으로
+constexpr int MAX_BUFFER = 4096;
+constexpr int MIN_BUFFER = 1024;
 
 constexpr char OP_MODE_RECV = 0;
 constexpr char OP_MODE_SEND = 1;
@@ -52,13 +54,16 @@ struct client_info {
 	SOCKET sock = -1;
 	atomic_bool connected = false;
 	atomic_bool is_active;
-	//char oType;
+	char oType;
 	unsigned char* m_packet_start;
 	unsigned char* m_recv_start;
 	//mutex vl;
 	unordered_set<int> view_list;
 	int move_time;
 	short sx, sy;
+	bool is_AIrandommove = false;
+	short cnt_randommove = 0;
+	short encountered_id = 0;
 };
 struct event_type {
 	int obj_id;
@@ -71,7 +76,7 @@ struct event_type {
 };
 
 mutex id_lock;//아이디를 넣어줄때 상호배제해줄 락킹
-client_info g_clients[MAX_USER+NUM_NPC];
+client_info g_clients[MAX_USER+NUM_NPC+NUM_OBSTACLE];
 HANDLE h_iocp;
 SOCKET g_listenSocket;
 OVER_EX g_accept_over; // accept용 overlapped 구조체
@@ -83,6 +88,8 @@ mutex sector_l;
 unordered_set<int> g_sector[S_SIZE][S_SIZE];
 
 void error_display(const char* msg, int err_no);
+
+void InitializeObstacle();
 
 void InitializeNPC();
 void RandomMoveNPC(int id);
@@ -108,11 +115,14 @@ void SendMovePacket(int to_id, int id);
 void SendChatPacket(int to_client, int id, char* mess);
 
 bool IsNear(int p1, int p2);
+bool IsCollide(int p1, int p2);
 bool IsNPC(int p1);
+bool IsObstacle(int p1);
 
 int API_SendMessage(lua_State* L);
 int API_get_y(lua_State* L);
 int API_get_x(lua_State* L);
+int API_RandomMove(lua_State* L);
 
 int main()
 {
@@ -145,6 +155,9 @@ int main()
 
 	// NPC 정보 세팅
 	InitializeNPC();
+
+	// 장애물 세팅
+	InitializeObstacle();
 
 	// timer thread 생성
 	thread timer_thread{ TimerThread };
@@ -277,14 +290,15 @@ void ProcessRecv(int id, DWORD iosize)
 
 void ProcessMove(int id, char dir)
 {
-	// 이동 전 좌표
+	// 이동 전
+	//// 좌표
 	short sx = g_clients[id].sx;
 	short sy = g_clients[id].sy;
 	short y = g_clients[id].y;
 	short x = g_clients[id].x;
-	// 이동 전 뷰 리스트
+	///// 뷰 리스트
 	unordered_set<int> old_viewlist = g_clients[id].view_list;
-	// 이동
+	// 임시 좌표1 이동
 	switch (dir) {
 	case MV_UP:
 		if (y > 0) y--;
@@ -306,45 +320,55 @@ void ProcessMove(int id, char dir)
 		break;
 	}
 
-	// 이동 후 좌표
-	g_clients[id].c_lock.lock();
-	int cur_x = g_clients[id].x = x;
-	int cur_y = g_clients[id].y = y;
-	g_clients[id].c_lock.unlock();
+	// 이동 후
+	//// 임시 좌표2 처리
+	int cur_x = x;
+	int cur_y = y;
 	int cur_sx = cur_x / S_SIZE;
 	int cur_sy = cur_y / S_SIZE;
-	// 이동 후 섹터
-	// sx, sy와 cur_sx, cur_sy가 동일하다면 -> 그대로
-	//											다르면 -> 이전 섹터에서 erase, 새로운 섹터에 insert
-	if (sx != cur_sx || sy != cur_sy) {
+	///// 섹터
+	if (sx != cur_sx || sy != cur_sy) {	// sx, sy와 cur_sx, cur_sy가 동일하다면 -> 그대로 // 다르면 -> 이전 섹터에서 erase, 새로운 섹터에 insert
 		sector_l.lock();
 		g_sector[sx][sy].erase(id);
 		g_sector[cur_sx][cur_sy].insert(id);
 		sector_l.unlock();
 	}
-
-	// 나에게 알림
-	SendMovePacket(id, id);
+	////좌표가 장애물과 겹치진 않는지? -> 겹치면 여기서 move fail
+	bool isCollide = false;
+	for (auto i : g_sector[cur_sx][cur_sy]) {
+		if (i == id) continue;
+		if (false == IsObstacle(i)) continue;
+		if (x == g_clients[i].x && y == g_clients[i].y) { // 충돌했다면
+			isCollide = true;
+			return;
+		}
+	}
+	// 실제 좌표 이동 
+	if (false == isCollide)  { // 장애물과 충돌 안 했다면
+		g_clients[id].c_lock.lock();
+		g_clients[id].x = cur_x;
+		g_clients[id].y = cur_y;
+		g_clients[id].c_lock.unlock();
+		// 나에게 알림
+		SendMovePacket(id, id);
+	}
 
 	// 뷰 리스트 처리
 	//// 이동 후 객체-객체가 서로 보이나 안 보이나 처리
 	unordered_set<int> new_viewlist; 
-	//for (int i = 0; i < MAX_USER; ++i) {
 	for(auto i : g_sector[cur_sx][cur_sy]){
 		if (id == i) continue;
-		//g_clients[i].c_lock.lock();
 		if (false == g_clients[i].connected) continue;
-		//g_clients[i].c_lock.unlock();
 		if (true == IsNear(id, i)) { // i가 id와 가깝다면
 			new_viewlist.insert(i); // 뉴 뷰리스트에 i를 넣는다
 		}
 	}
-//	for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
 	for(auto i : g_sector[cur_sx][cur_sy]){
-		if (false == IsNPC(i)) continue;
+		if (false == IsNPC(i) && false == IsObstacle(i)) continue;
 		if (true == IsNear(id, i)) {
 			new_viewlist.insert(i);
-			WakeUpNPC(i);
+			if(true == IsNPC(i))
+				WakeUpNPC(i);
 		}
 	}
 
@@ -356,7 +380,7 @@ void ProcessMove(int id, char dir)
 			g_clients[id].c_lock.unlock();
 			SendEnterPacket(id, ob); // 이동한 클라이언트(id)에게 시야에 들어온 ob를 enter하게 한다
 
-			if (false == IsNPC(ob)) {
+			if (false == IsNPC(ob) && false == IsObstacle(ob)) {
 				if (0 == g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob의 뷰리스트에 id가 없었다면
 					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.insert(id); // 시야에 들어온 ob의 뷰리스트에 id를 넣어주고
@@ -364,21 +388,17 @@ void ProcessMove(int id, char dir)
 					SendEnterPacket(ob, id); // ob에게 id를 enter하게 한다
 				}
 				else {// 시야에 들어온 ob의 뷰리스트에 id가 있었다면 
-					//g_clients[ob].c_lock.unlock();
 					SendMovePacket(ob, id); // ob에게 id를 move하게 한다
 				}
 			}
 		}
 		else {  // 이동 전에 시야에 있었던 경우
-			if (false == IsNPC(ob)) {
-				//g_clients[ob].c_lock.lock();
+			if (false == IsNPC(ob) && false == IsObstacle(ob)) {
 				if (0 != g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob가 id뷰리스트에 원래 있었ㄷ면
-					//g_clients[ob].c_lock.unlock();
 					SendMovePacket(ob, id); // ob에게 id move 패킷 보냄
 				}
 				else // id가 ob의 뷰리스트에 없었다면
 				{
-					//g_clients[ob].c_lock.unlock();
 					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.insert(id); // ob의 뷰리스트에 id 넣어줌 
 					g_clients[ob].c_lock.unlock();
@@ -393,29 +413,24 @@ void ProcessMove(int id, char dir)
 			g_clients[id].view_list.erase(ob); // 이동한 id의 뷰리스트에서 ob를 삭제
 			g_clients[id].c_lock.unlock();
 			SendLeavePacket(id, ob); // id가 ob를 leave 하게끔
-			if (false == IsNPC(ob)) {
-				//g_clients[ob].c_lock.lock();
+			if (false == IsNPC(ob) && false == IsObstacle(ob)) {
 				if (0 != g_clients[ob].view_list.count(id)) { // ob의 뷰리스트에 id가 있었다면
 					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.erase(id); // ob의 뷰리스트에서도 id를 삭제
 					g_clients[ob].c_lock.unlock();
 					SendLeavePacket(ob, id); // ob가 id를 leave 하게끔
 				}
-				//else
-					//g_clients[ob].c_lock.unlock();
 			}
 		}
 	}
 
 	// 주위 npc에게 player event를 pqcs로 보낸다
-	if (true == IsNPC(id)) { 
-		for (auto& npc : new_viewlist) {
-			if (false == IsNPC(npc)) continue;
-			OVER_EX* ex_over = new OVER_EX;
-			ex_over->object_id = id;
-			ex_over->op_mode = OP_PLAYER_MOVE_NOTIFY;
-			PostQueuedCompletionStatus(h_iocp, 1, npc, &ex_over->wsa_over);
-		}
+	for (auto& npc : new_viewlist) {
+		if (false == IsNPC(npc)) continue;
+		OVER_EX* ex_over = new OVER_EX;
+		ex_over->object_id = id;
+		ex_over->op_mode = OP_PLAYER_MOVE_NOTIFY;
+		PostQueuedCompletionStatus(h_iocp, 1, npc, &ex_over->wsa_over);
 	}
 }
 
@@ -669,7 +684,7 @@ void SendLeavePacket(int to_id, int id)
 	sc_packet_leave packet;
 	packet.id = id;
 	packet.size = sizeof(packet);
-	packet.type = SC_LEAVE;
+	packet.type = SC_PACKET_LEAVE;
 	SendPacket(to_id, &packet);
 }
 
@@ -681,7 +696,7 @@ void SendLoginOK(int id)
 	p.id = id;
 	p.level = 1;
 	p.size = sizeof(p);
-	p.type = SC_LOGIN_OK;
+	p.type = SC_PACKET_LOGIN_OK;
 	p.x = g_clients[id].x;
 	p.y = g_clients[id].y;
 	SendPacket(id, &p); // p를 보내면 struct가 몽땅 카피돼서 보내짐
@@ -692,7 +707,7 @@ void SendEnterPacket(int to_id, int new_id)
 	sc_packet_enter p;
 	p.id = new_id;
 	p.size = sizeof(p);
-	p.type = SC_ENTER;
+	p.type = SC_PACKET_ENTER;
 	p.x = g_clients[new_id].x;
 	p.y = g_clients[new_id].y;
 	//g_clients[new_id].c_lock.lock();
@@ -707,7 +722,7 @@ void SendMovePacket(int to_id, int id)
 	sc_packet_move p;
 	p.id = id;
 	p.size = sizeof(p);
-	p.type = SC_MOVEPLAYER;
+	p.type = SC_PACKET_MOVE;
 	p.x = g_clients[id].x;
 	p.y = g_clients[id].y;
 	p.move_time = g_clients[id].move_time;
@@ -719,7 +734,7 @@ void SendChatPacket(int to_client, int id, char* mess)
 	sc_packet_chat p;
 	p.id = id;
 	p.size = sizeof(p);
-	p.type = SC_CHAT;
+	p.type = SC_PACKET_CHAT;
 	strcpy_s(p.message, mess);
 	SendPacket(to_client, &p);
 }
@@ -731,9 +746,17 @@ bool IsNear(int p1, int p2)
 	return dist <= VIEW_LIMIT * VIEW_LIMIT;
 }
 
+bool IsCollide(int p1, int p2) {
+	return (g_clients[p1].x == g_clients[p2].x && g_clients[p1].y == g_clients[p2].y);
+}
+
 bool IsNPC(int p1)
 {
-	return p1 >= MAX_USER;
+	return p1 >= MAX_USER && p1 < NUM_NPC;
+}
+
+bool IsObstacle(int p1) {
+	return p1 >= MAX_USER + NUM_NPC;
 }
 
 void error_display(const char* msg, int err_no) {
@@ -782,10 +805,32 @@ void InitializeNPC()
 		lua_register(L, "API_SendMessage", API_SendMessage);
 		lua_register(L, "API_get_x", API_get_x);
 		lua_register(L, "API_get_y", API_get_y);
+		lua_register(L, "API_RandomMove", API_RandomMove);
 	}
 //#ifdef _DEBUG
 	cout << "Initializing NPCs finishied.\n";
 //#endif
+}
+
+void InitializeObstacle() {
+	// 10000개 랜덤 생성 : 배열
+//	#ifdef _DEBUG
+	cout << "Initializing Obstacles\n";
+	//#endif
+	int id = MAX_USER + NUM_NPC;
+	for (int i = MAX_USER+NUM_NPC; i < MAX_USER + NUM_NPC +NUM_OBSTACLE; ++i) {
+		g_clients[i].x = rand() % WORLD_WIDTH;
+		g_clients[i].y = rand() % WORLD_HEIGHT;
+		// 섹터
+		int sx = g_clients[i].x / S_SIZE;
+		int sy = g_clients[i].y / S_SIZE;
+		// 섹터에 정보 넣기
+		sector_l.lock();
+		g_sector[sx][sy].insert(i);
+		sector_l.unlock();
+	}
+
+	cout << "Initializing Obstacles finishied.\n";
 }
 
 void RandomMoveNPC(int id)
@@ -933,6 +978,21 @@ void RandomMoveNPC(int id)
 	//}
 	//---------------------------------
 
+	// AI Script에 의한 randommove일 경우 : 3칸 이동 모두 마쳤으면 bye 채팅 메시지 출력하게끔 
+	if (g_clients[id].is_AIrandommove) {
+		g_clients[id].c_lock.lock();
+		g_clients[id].cnt_randommove++;
+		g_clients[id].c_lock.unlock();
+		if (g_clients[id].cnt_randommove >= 3) {
+			char mess[5] = "Bye";
+			SendChatPacket(g_clients[id].encountered_id, id, mess);
+			g_clients[id].c_lock.lock();
+			g_clients[id].is_AIrandommove = false;
+			g_clients[id].cnt_randommove = 0;
+			g_clients[id].c_lock.unlock();
+		}
+	}
+
 	if (true == n_vl.empty()) {
 		g_clients[id].is_active = false;
 	}
@@ -991,5 +1051,17 @@ int API_get_x(lua_State* L) {
 	int x = g_clients[user_id].x;
 	lua_pushnumber(L, x);
 	return 1;
+}
+
+int API_RandomMove(lua_State* L) {
+	int monster_id = (int)lua_tointeger(L, -2);
+	int user_id = (int)lua_tointeger(L, -1);
+	lua_pop(L, 2);
+	//RandomMoveNPC(monster_id);
+	g_clients[monster_id].cnt_randommove = 0;
+	g_clients[monster_id].is_AIrandommove = true;
+	g_clients[monster_id].encountered_id = user_id;
+	// SendChatPacket(user_id, monster_id, mess);
+	return 0;
 }
 

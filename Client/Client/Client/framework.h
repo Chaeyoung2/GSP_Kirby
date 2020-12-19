@@ -42,6 +42,14 @@ using namespace chrono;
 #define WM_SOCKET (WM_USER+1)
 #define SERVER_IP "127.0.0.1"
 
+constexpr int TILEMAX = 2000;
+constexpr int TILESCREENMAX = 20;
+constexpr int KEY_UP = 0;
+constexpr int KEY_DOWN = 1;
+constexpr int KEY_LEFT = 2;
+constexpr int KEY_RIGHT = 3;
+constexpr int KEY_ATTACK = 4;
+
 // extern
 extern HWND g_hwnd;
 

@@ -16,14 +16,13 @@ DWORD		in_packet_size = 0;
 int		saved_packet_size = 0;
 DWORD send_last_time = 0; // 마지막으로 send하고 얼마나 지났는지
 
-
 void ProcessPacket(char* ptr, MainGame* maingame)
 {
 	int packet_size = ptr[0];
 	int packet_type = ptr[1];
 	OBJ* pPlayers = maingame->getPlayers();
 	switch (packet_type) {
-	case SC_LOGIN_OK:
+	case SC_PACKET_LOGIN_OK:
 	{
 		sc_packet_login_ok* p = reinterpret_cast<sc_packet_login_ok*>(ptr);
 		int packet_id = p->id;
@@ -42,17 +41,17 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		//maingame->setObjectRect(packet_id);
 		// 로그인 ok 사인 받으면
 		int t_id = GetCurrentProcessId();
-		char tempBuffer[MAX_NICKNAME] = "";
+		char tempBuffer[MAX_ID_LEN] = "";
 		sprintf_s(tempBuffer, "P%03d", t_id % 1000);
-		pPlayers[packet_id].name = new char[MAX_NICKNAME];
-		ZeroMemory(pPlayers[packet_id].name, MAX_NICKNAME);
+		pPlayers[packet_id].name = new char[MAX_ID_LEN];
+		ZeroMemory(pPlayers[packet_id].name, MAX_ID_LEN);
 		memcpy(pPlayers[packet_id].name, tempBuffer, strlen(tempBuffer));
 		pl.unlock();
 		// 좌표에 따라 스크롤 설정
 		maingame->setScroll(ptX, ptY);
 	}
 	break;
-	case SC_MOVEPLAYER:
+	case SC_PACKET_MOVE:
 	{
 		sc_packet_move* p = reinterpret_cast<sc_packet_move*>(ptr);
 		int packet_id = p->id;
@@ -70,7 +69,7 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		// cout << "Recv Type[" << SC_MOVEPLAYER << "] Player's X[" << ptX << "] Player's Y[" << ptY << "]\n";
 	}
 	break;
-	case SC_ENTER:
+	case SC_PACKET_ENTER:
 	{
 		sc_packet_enter* packet = reinterpret_cast<sc_packet_enter*>(ptr);
 		int packet_id = packet->id;
@@ -81,15 +80,15 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pPlayers[packet_id].id = packet_id;
 		pPlayers[packet_id].ptX = packet->x;
 		pPlayers[packet_id].ptY = packet->y;
-		pPlayers[packet_id].name = new char[MAX_NICKNAME];
-		ZeroMemory(pPlayers[packet_id].name, MAX_NICKNAME);
+		pPlayers[packet_id].name = new char[MAX_ID_LEN];
+		ZeroMemory(pPlayers[packet_id].name, MAX_ID_LEN);
 		memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
 		pl.unlock();
 		maingame->setObjectPoint(packet_id, packet->x, packet->y);
 		// maingame->setObjectRect(packet_id);
 	}
 	break;
-	case SC_LEAVE:
+	case SC_PACKET_LEAVE:
 	{
 		sc_packet_leave* my_packet = reinterpret_cast<sc_packet_leave*>(ptr);
 		int packet_id = my_packet->id;
@@ -100,7 +99,7 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pl.unlock();
 	}
 	break;
-	case SC_CHAT: 
+	case SC_PACKET_CHAT:
 	{
 		sc_packet_chat* p = reinterpret_cast<sc_packet_chat*>(ptr);
 		int id = p->id;
@@ -155,7 +154,6 @@ void RecvPacket(LPVOID classPtr) {
 	}
 }
 
-
 MainGame::MainGame()
 {
 }
@@ -200,11 +198,13 @@ void MainGame::Render()
 	HDC hdcBackGround = CreateCompatibleDC(hdcMain);
 	HDC hdcPlayer = CreateCompatibleDC(hdcMain);
 	HDC hdcNPC = CreateCompatibleDC(hdcMain);
+	HDC hdcObstacle = CreateCompatibleDC(hdcMain);
 
 	SelectObject(hdcBuffer, bitmaps[0]);
 	SelectObject(hdcBackGround, bitmaps[1]);
 	SelectObject(hdcPlayer, bitmaps[2]);
 	SelectObject(hdcNPC, bitmaps[3]);
+	SelectObject(hdcObstacle, bitmaps[4]);
 
 	int playerptX = 0, playerptY = 0;
 
@@ -218,7 +218,7 @@ void MainGame::Render()
 		LineTo(hdcBuffer, TILESIZE * (TILESCREENMAX), TILESIZE*(i) );
 	}
 	// render Players
-	for (int i = 0; i < MAX_USER + NUM_NPC; ++i) {
+	for (int i = 0; i < MAX_USER + NUM_NPC + NUM_OBSTACLE; ++i) {
 		if (players[i].connected == false) continue;
 		OBJ obj = players[i];
 		short x = players[i].ptX * TILESIZE + TILESIZE * 0.5f;
@@ -248,14 +248,14 @@ void MainGame::Render()
 			//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
 			//TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
 			if (players[i].name != nullptr) {
-				TCHAR lpNickname[MAX_NICKNAME];	// 닉네임
+				TCHAR lpNickname[MAX_ID_LEN];	// 닉네임
 				size_t convertedChars = 0;
 				size_t newsize = strlen(obj.name) + 1;
 				mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
 				TextOut(hdcBuffer, rc.left + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
 			}
 		}
-		else { // NPC
+		else if( MAX_USER <= i  && i < MAX_USER + NUM_NPC) { // NPC
 			TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
 				rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
 				MON1CX, MON1CY, /// 출력할 이미지의 너비, 높이
@@ -264,17 +264,27 @@ void MainGame::Render()
 				20, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
 				RGB(0, 255, 255) /// 투명하게 할 색상
 			);
-			// 정보 출력
-			//TCHAR lpOut[128]; // 좌표
+			// 좌표 정보 출력
+			//TCHAR lpOut[128]; 
 			//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
 			//TextOut(hdcBuffer, players[i].rect.left + 10 + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
 			if (obj.name != nullptr) {
-				TCHAR lpNickname[MAX_NICKNAME];	// 닉네임
+				TCHAR lpNickname[MAX_ID_LEN];	// 닉네임
 				size_t convertedChars = 0;
 				size_t newsize = strlen(obj.name) + 1;
 				mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
 				TextOut(hdcBuffer, rc.left + 5 + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
 			}
+		}
+		else {
+			TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
+				rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
+				30, 30, /// 출력할 이미지의 너비, 높이
+				hdcObstacle, /// 이미지 핸들
+				0, 0, /// 가져올 이미지의 시작지점 x,y 
+				30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
+				RGB(0, 255, 255) /// 투명하게 할 색상
+			);
 		}
 		// chat message
 		if (high_resolution_clock::now() < obj.timeout) {
@@ -301,6 +311,7 @@ void MainGame::Render()
 	// render BackBuffer at MainDC (Double Buffering)
 	BitBlt(hdcMain, 0, 0, WINCX, WINCY, hdcBuffer, 0, 0, SRCCOPY);
 
+	DeleteDC(hdcObstacle);
 	DeleteDC(hdcNPC);
 	DeleteDC(hdcPlayer);
 	DeleteDC(hdcBackGround);
@@ -315,67 +326,61 @@ void MainGame::InputKeyState(int key)
 	if (send_last_time < 10) return;
 	send_last_time = 0;
 
-	int x = 0, y = 0;
+	int ret = 0;
+	if (key < KEY_ATTACK) {
+		int x = 0, y = 0;
+		// 0: up, 1:down, 2:left, 3:right, 4:attack
+		switch (key) {
+		case KEY_UP:
+			y -= 1;
+			break;
+		case KEY_DOWN:
+			y += 1;
+			break;
+		case KEY_LEFT:
+			x -= 1;
+			break;
+		case KEY_RIGHT:
+			x += 1;
+			break;
+		}
+		// Send
+		cs_packet_move* p = reinterpret_cast<cs_packet_move*>(send_buffer);
+		p->size = sizeof(p);
+		send_wsabuf.len = sizeof(p);
+		DWORD iobyte;
+		p->type = CS_MOVE;
+		if (0 != x) {
+			if (1 == x)
+				p->direction = MV_RIGHT;
+			else
+				p->direction = MV_LEFT;
+		}
+		else if (0 != y) {
+			if (1 == y)
+				p->direction = MV_DOWN;
+			else
+				p->direction = MV_UP;
+		}
 
-	// 0: up, 1:down, 2:left, 3:right
-	switch (key) {
-	case 0: 
-		y -= 1;
-		//if (players[myid].ptY >= 0 && players[myid].ptY <= TILEMAX - 1) 
-		//	scrollY += 70;
-		//else g_scrollY = TILESIZE * players[myid].ptY;
-		break;
-	case 1: 
-		y += 1;
-		//if (players[myid].ptY >= 0 && players[myid].ptY <= TILEMAX - 1) 
-		//	scrollY -= 70;
-		//else g_scrollY = TILESIZE * players[myid].ptY;
-		break;
-	case 2: 
-		x -= 1;
-		//if (players[myid].ptX >= 0 && players[myid].ptX <= TILEMAX - 1) 
-		//	scrollX += 70;
-		//else g_scrollX = TILESIZE * players[myid].ptX;
-		break;
-	case 3: 
-		x += 1;
-		//if (players[myid].ptX >= 0 && players[myid].ptX <= TILEMAX - 1) 
-		//	scrollX -= 70;
-		//else g_scrollX = TILESIZE * players[myid].ptX;
-		break;
+		ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
+	}
+	else if(key == KEY_ATTACK) {
+		cs_packet_attack* p = reinterpret_cast<cs_packet_attack*>(send_buffer);
+		p->size = sizeof(p);
+		send_wsabuf.len = sizeof(p);
+		DWORD iobyte;
+		p->type = CS_ATTACK;
 	}
 
-
-	// 이때 딱 한번 서버에 보냄.
-	cs_packet_move* p = reinterpret_cast<cs_packet_move*>(send_buffer);
-	p->size = sizeof(p);
-	send_wsabuf.len = sizeof(p);
-	DWORD iobyte;
-	p->type = CS_MOVE;
-	if (0 != x) {
-		if (1 == x)
-			p->direction = MV_RIGHT;
-		else
-			p->direction = MV_LEFT;
-	}
-	else if (0 != y) {
-		if (1 == y)
-			p->direction = MV_DOWN;
-		else
-			p->direction = MV_UP;
-	}
-	int ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
 	if (ret) {
 		int error_code = WSAGetLastError();
 		printf("Error while send packet [%d]", error_code);
 	}
 
-
 	//-----------
 	//SendPacket(&p);
-
 	//InvalidateRect(g_hwnd, NULL, TRUE);
-
 }
 
 
@@ -402,11 +407,8 @@ void MainGame::setObjectRect(int id)
 
 void MainGame::setScroll(int ptX, int ptY)
 {
-
 	scrollX = -(ptX * TILESIZE) + (WINCX * 0.5);
 	scrollY = -(ptY * TILESIZE) + (WINCY * 0.5);
-
-
 	// 스크롤 처리
 	if (scrollX < WINCX - (TILESIZE * TILEMAX) - (WINCX * 0.5))
 		scrollX = WINCX - (TILESIZE * TILEMAX) - (WINCX * 0.5);
@@ -416,8 +418,6 @@ void MainGame::setScroll(int ptX, int ptY)
 		scrollY = WINCY - (TILESIZE * TILEMAX) - (WINCY * 0.5);
 	if (scrollY > WINCY * 0.5)
 		scrollY = WINCY * 0.5;
-
-
 	//cout << "scrollX : " << scrollX << endl;
 	//cout << "scrollY : " << scrollY << endl;
 }
@@ -468,6 +468,15 @@ void MainGame::LoadBitmaps()
 	}
 	else
 		bitmaps[3] = tempBitmap;
+
+	// Obstacle
+	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/Obstacle.bmp", IMAGE_BITMAP, 30, 30, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (NULL == tempBitmap) {
+		MessageBox(g_hwnd, L"Image/Obstacle.bmp", L"Failed (LoadImage)", MB_OK);
+		return;
+	}
+	else
+		bitmaps[4] = tempBitmap;
 }
 
 void MainGame::InitNetwork()
@@ -518,7 +527,7 @@ void MainGame::InitNetwork()
 	//SendPacket(&login_packet);
 
 	// 멤버변수 mynickname에 닉네임 설정 (char to wchar_t)
-	char tempBuffer[MAX_NICKNAME] = "";
+	char tempBuffer[MAX_ID_LEN] = "";
 	strcpy_s(tempBuffer, p->name);
 	size_t convertedChars = 0;
 	size_t newsize = strlen(tempBuffer) + 1;
@@ -547,7 +556,8 @@ void MainGame::Release()
 	DeleteObject(bitmaps[0]);
 	DeleteObject(bitmaps[1]);
 	DeleteObject(bitmaps[2]);
-
+	DeleteObject(bitmaps[3]);
+	DeleteObject(bitmaps[4]);
 	
 	closesocket(serverSocket);
 	WSACleanup();
