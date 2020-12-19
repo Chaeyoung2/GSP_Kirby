@@ -86,6 +86,7 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pPlayers[packet_id].ptX = packet->x;
 		pPlayers[packet_id].ptY = packet->y;
 		pPlayers[packet_id].name = new char[MAX_ID_LEN];
+		pPlayers[packet_id].m_type = packet->o_type;
 		ZeroMemory(pPlayers[packet_id].name, MAX_ID_LEN);
 		memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
 		pl.unlock();
@@ -222,6 +223,8 @@ void MainGame::Render()
 	HDC hdcObstacle = CreateCompatibleDC(hdcMain);
 	HDC hdcBullet = CreateCompatibleDC(hdcMain);
 	HDC hdcGameover = CreateCompatibleDC(hdcMain);
+	HDC hdcAgro = CreateCompatibleDC(hdcMain);
+	HDC hdcPeace = CreateCompatibleDC(hdcMain);
 
 	SelectObject(hdcBuffer, bitmaps[0]);
 	SelectObject(hdcBackGround, bitmaps[1]);
@@ -230,6 +233,8 @@ void MainGame::Render()
 	SelectObject(hdcObstacle, bitmaps[4]);
 	SelectObject(hdcBullet, bitmaps[5]);
 	SelectObject(hdcGameover, bitmaps[6]);
+	SelectObject(hdcAgro, bitmaps[7]);
+	SelectObject(hdcPeace, bitmaps[8]);
 
 	int playerptX = 0, playerptY = 0;
 	// render BackGround at BackBuffer
@@ -274,14 +279,17 @@ void MainGame::Render()
 				}
 			}
 			else if (MAX_USER <= i && i < MAX_USER + NUM_NPC) { // NPC
-				TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-					rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
-					MON1CX, MON1CY, /// 출력할 이미지의 너비, 높이
-					hdcNPC, /// 이미지 핸들
-					0, 0, /// 가져올 이미지의 시작지점 x,y 
-					20, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
-					RGB(0, 255, 255) /// 투명하게 할 색상
-				);
+				switch (players[i].m_type) {
+				case 0:
+					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcPeace, 0, 0, 50, 50, RGB(0, 255, 255));
+					break;
+				case 1:
+					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcNPC, 0, 0, 20, 30, RGB(0, 255, 255));
+					break;
+				case 2:
+					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcAgro, 0, 0, 30, 30, RGB(0, 255, 255));
+					break;
+				}
 				// 좌표 정보 출력
 				//TCHAR lpOut[128]; 
 				//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
@@ -363,9 +371,9 @@ void MainGame::Render()
 		TextOut(hdcMain, rc.left, rc.bottom, (wchar_t*)lpUI, lstrlen(lpUI));
 	}
 
-
-
 	DeleteDC(hdcGameover);
+	DeleteDC(hdcAgro);
+	DeleteDC(hdcPeace);
 	DeleteDC(hdcBullet);
 	DeleteDC(hdcObstacle);
 	DeleteDC(hdcNPC);
@@ -561,6 +569,25 @@ void MainGame::LoadBitmaps()
 	}
 	else
 		bitmaps[6] = tempBitmap;
+
+	// Agro
+	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/Agro.bmp", IMAGE_BITMAP, 30, 30, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (NULL == tempBitmap) {
+		MessageBox(g_hwnd, L"Image/Agro.bmp", L"Failed (LoadImage)", MB_OK);
+		return;
+	}
+	else
+		bitmaps[7] = tempBitmap;
+
+
+	// Peace
+	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/Peace.bmp", IMAGE_BITMAP, 50, 50, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (NULL == tempBitmap) {
+		MessageBox(g_hwnd, L"Image/Peace.bmp", L"Failed (LoadImage)", MB_OK);
+		return;
+	}
+	else
+		bitmaps[8] = tempBitmap;
 }
 
 void MainGame::InitNetwork()
@@ -637,13 +664,9 @@ void MainGame::SendPacket(void* packet)
 
 void MainGame::Release()
 {
-	DeleteObject(bitmaps[0]);
-	DeleteObject(bitmaps[1]);
-	DeleteObject(bitmaps[2]);
-	DeleteObject(bitmaps[3]);
-	DeleteObject(bitmaps[4]);
-	DeleteObject(bitmaps[5]);
-	DeleteObject(bitmaps[6]);
+	for (int i = 0; i < 9; ++i) {
+		DeleteObject(bitmaps[i]);
+	}
 	
 	closesocket(serverSocket);
 	WSACleanup();

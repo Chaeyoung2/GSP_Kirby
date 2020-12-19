@@ -29,7 +29,7 @@ public:
 	}
 private:
 	HDC hdc;
-	HBITMAP bitmaps[7];
+	HBITMAP bitmaps[10];
 private:
 	wchar_t mynickname[128] = L"";
 	OBJ players[MAX_USER+NUM_NPC+NUM_OBSTACLE] = {};

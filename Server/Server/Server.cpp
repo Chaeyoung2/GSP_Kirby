@@ -19,6 +19,9 @@ extern "C" {
 using namespace std;
 using namespace chrono;
 
+
+constexpr int S_SIZE = 50;
+
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "MSWSock.lib")
 #pragma comment(lib, "lua54.lib")
@@ -69,6 +72,7 @@ struct client_info {
 	short encountered_id = 0;
 	short attackme_id = 0;
 	high_resolution_clock::time_point invincible_timeout;
+	short m_type;
 };
 struct event_type {
 	int obj_id;
@@ -89,7 +93,6 @@ priority_queue<event_type> timer_queue;
 mutex timer_l;
 mutex sector_l;
 
-#define S_SIZE 50
 unordered_set<int> g_sector[S_SIZE][S_SIZE];
 
 void error_display(const char* msg, int err_no);
@@ -839,7 +842,7 @@ void SendEnterPacket(int to_id, int new_id)
 	//g_clients[new_id].c_lock.lock();
 	strcpy_s(p.name, g_clients[new_id].name);
 	//g_clients[new_id].c_lock.unlock();
-	p.o_type = 0;
+	p.o_type = g_clients[new_id].m_type;
 	SendPacket(to_id, &p);
 }
 
@@ -938,6 +941,7 @@ void InitializeNPC()
 		strcpy_s(g_clients[i].name, npc_name);
 		g_clients[i].is_active = false;
 		g_clients[i].hp = MAX_MONSTERHP;
+		g_clients[i].m_type = rand() % 3; // 몬스터 타입
 		g_clients[i].c_lock.unlock();
 		// 가상 머신 생성
 		lua_State* L = g_clients[i].L = luaL_newstate();
