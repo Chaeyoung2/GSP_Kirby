@@ -352,7 +352,26 @@ void MainGame::Render()
 					++iter;
 			}
 		}
+
+		// render UI
+		{
+			RECT rc; rc.left = 0; rc.right = WINCX; rc.bottom = 50; rc.top = 0;
+			TCHAR lpUI[MAX_STR_LEN];
+			wsprintfW(lpUI, TEXT("♥LEVEL : %d                 ♥HP : %d                 ♥EXP : %d          "),
+				players[myid].level, players[myid].hp, players[myid].exp);
+			TextOut(hdcMain, rc.left, rc.bottom, (wchar_t*)lpUI, lstrlen(lpUI));
+		}
+
+		// reder chat
+		{
+			TCHAR lpNickname[MAX_ID_LEN];	// 닉네임
+			size_t convertedChars = 0;
+			size_t newsize = strlen(obj.name) + 1;
+			mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
+			TextOut(hdcBuffer, rc.left + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+		}
 	}
+	// 게임 오버 화면
 	else {
 		BitBlt(hdcBuffer, 0, 0, WINCX, WINCY, hdcGameover, 0, 0, SRCCOPY);
 		if (gameover_timeout < high_resolution_clock::now()) {
@@ -362,14 +381,6 @@ void MainGame::Render()
 	// render BackBuffer at MainDC (Double Buffering)
 	BitBlt(hdcMain, 0, 0, WINCX, WINCY, hdcBuffer, 0, 0, SRCCOPY);
 
-	// render UI
-	{
-		RECT rc; rc.left = 0; rc.right = WINCX; rc.bottom = WINCY; rc.top = WINCX - 50;
-		TCHAR lpUI[MAX_STR_LEN];
-		wsprintfW(lpUI, TEXT("♥LEVEL : %d \t ♥HP : %d \t ♥EXP : %d"),
-			players[myid].level, players[myid].hp, players[myid].exp);
-		TextOut(hdcMain, rc.left, rc.bottom, (wchar_t*)lpUI, lstrlen(lpUI));
-	}
 
 	DeleteDC(hdcGameover);
 	DeleteDC(hdcAgro);

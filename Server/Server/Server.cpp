@@ -130,6 +130,8 @@ void SendChatPacket(int to_client, int id, char* mess);
 void SendStatChangePacket(int id);
 void SendDeadPacket(int id);
 
+int calcDist(int p1, int p2);
+
 bool IsNear(int p1, int p2);
 bool IsCollide(int p1, int p2);
 bool IsNPC(int p1);
@@ -542,7 +544,7 @@ void StatChange_MonsterCollide(int id) {
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 7s;
 	}
 	else
-		g_clients[id].invincible_timeout = high_resolution_clock::now() + 1s;
+		g_clients[id].invincible_timeout = high_resolution_clock::now() + 3s;
 	SendStatChangePacket(id);
 }
 
@@ -879,6 +881,20 @@ void SendStatChangePacket(int id) {
 	SendPacket(id, &p);
 }
 
+int calcDist(int p1, int p2) {
+	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
+	dist += (g_clients[p1].y - g_clients[p2].y) * (g_clients[p1].y - g_clients[p2].y);
+	return sqrt(dist);
+}
+
+int calcDistX(int p1, int p2) {
+	return abs(g_clients[p1].x - g_clients[p2].x);
+}
+
+int calcDistY(int p1, int p2) {
+	return abs(g_clients[p1].y - g_clients[p2].y);
+}
+
 bool IsNear(int p1, int p2)
 {
 	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
@@ -990,7 +1006,7 @@ void RandomMoveNPC(int id)
 	int sx = x / S_SIZE;
 	int sy = y / S_SIZE;
 
-	// 이동 전에 npc hp 확인
+	// 이동 전에 hp 확인, hp <0이면 사망 처리
 	if (g_clients[id].hp <= 0) {
 		g_clients[id].is_active = false;
 		g_clients[id].connected = false;
@@ -1010,32 +1026,76 @@ void RandomMoveNPC(int id)
 		return;
 	}
 
+
 	// 이동 전 viewlist
 	unordered_set<int> o_vl;
-	//for (int i = 0; i < MAX_USER; ++i) {
 	for (auto i : g_sector[sx][sy]) {
 		if (false == g_clients[i].connected) continue;
-		if (true == IsNear(id, i)) 
+		if (true == IsNear(id, i))
 			o_vl.insert(i);
 	}
-	// 이동
-	switch (rand() % 4) {
-	case 0:
-		if (x > 0)
-			x--;
-		break;
-	case 1:
-		if (x < WORLD_WIDTH - 1)
-			x++;
-		break;
-	case 2:
-		if (y > 0)
-			y--;
-		break;
-	case 4:
-		if (y < WORLD_HEIGHT - 1)
-			y++;
-		break;
+	int type = g_clients[id].m_type;
+	if (type == 1) // 로밍
+	{
+		// 이동
+		switch (rand() % 4) {
+		case 0:
+			if (x > 0)
+				x--;
+			break;
+		case 1:
+			if (x < WORLD_WIDTH - 1)
+				x++;
+			break;
+		case 2:
+			if (y > 0)
+				y--;
+			break;
+		case 4:
+			if (y < WORLD_HEIGHT - 1)
+				y++;
+			break;
+		}
+	}
+	else if (type == 2) { // 어그로
+		// 이동
+		int dist = 0, nearPl = 0, nearPlX = 0, nearPlY;
+		for (auto i : g_sector[sx][sy]) { // 제일 가까운 플레이어 찾기
+			if (dist < calcDist(i, id)) {
+				nearPl = i;
+			}
+		}
+		// 가까운 플레이어가 위/아래?왼/오?에 있는지 검사
+		nearPlX = g_clients[nearPl].x;
+		nearPlY = g_clients[nearPl].y;
+		if (nearPlX <= x) {// 왼쪽에 있음
+			if (nearPlY <= y) { // 위에 있음
+				if (abs(nearPlX - x) < abs(nearPlY - y)) // x거리가 더 가까우면
+					y--;
+				else
+					x--;
+			}
+			if (nearPlY > y) { // 아래에 있음
+				if (abs(nearPlX - x) < abs(nearPlY - y)) // x거리가 더 가까우면
+					y++;
+				else
+					x--;
+			}
+		}
+		else if(nearPlX > x) {// 오른쪽에 있음
+			if (nearPlY <= y) { // 위에 있음
+				if (abs(nearPlX - x) < abs(nearPlY - y)) // x거리가 더 가까우면
+					y--;
+				else
+					x++;
+			}
+			if(nearPlY > y) { // 아래에 있음
+				if (abs(nearPlX - x) < abs(nearPlY - y)) // x거리가 더 가까우면
+					y++;
+				else
+					x++;
+			}
+		}
 	}
 	// 이동 후 좌표
 	int cur_x = g_clients[id].x = x;
@@ -1052,10 +1112,9 @@ void RandomMoveNPC(int id)
 		g_sector[cur_sx][cur_sy].insert(id);
 		sector_l.unlock();
 	}
-	// view list 처리 (sector O) ----------------- - 섹터 안의 뷰리스트
 	// 이동 후 viewlist
 	unordered_set<int> n_vl;
-	for(auto i : g_sector[cur_sx][cur_sy]){
+	for (auto i : g_sector[cur_sx][cur_sy]) {
 		if (id == i) continue;
 		if (false == g_clients[i].connected) continue;
 		if (true == IsNear(id, i))
@@ -1111,25 +1170,28 @@ void RandomMoveNPC(int id)
 		}
 	}
 
+	// 로밍 ai
 	// AI Script에 의한 randommove일 경우 : 3칸 이동 모두 마쳤으면 bye 채팅 메시지 출력하게끔 
-	if (g_clients[id].is_AIrandommove) {
-		g_clients[id].c_lock.lock();
-		g_clients[id].cnt_randommove++;
-		g_clients[id].c_lock.unlock();
-		if (g_clients[id].cnt_randommove >= 3) {
-			char mess[5] = "Bye";
-			SendChatPacket(g_clients[id].encountered_id, id, mess);
+	if (g_clients[id].m_type == 1) {
+		if (g_clients[id].is_AIrandommove) {
 			g_clients[id].c_lock.lock();
-			g_clients[id].is_AIrandommove = false;
-			g_clients[id].cnt_randommove = 0;
+			g_clients[id].cnt_randommove++;
 			g_clients[id].c_lock.unlock();
+			if (g_clients[id].cnt_randommove >= 3) {
+				char mess[5] = "BYE";
+				SendChatPacket(g_clients[id].encountered_id, id, mess);
+				g_clients[id].c_lock.lock();
+				g_clients[id].is_AIrandommove = false;
+				g_clients[id].cnt_randommove = 0;
+				g_clients[id].c_lock.unlock();
+			}
 		}
 	}
 
 	if (true == n_vl.empty()) {
 		g_clients[id].is_active = false;
 	}
-	else{
+	else {
 		AddTimer(id, OP_RANDOM_MOVE, system_clock::now() + 1s);
 	}
 
@@ -1139,6 +1201,8 @@ void RandomMoveNPC(int id)
 		over_ex->op_mode = OP_PLAYER_MOVE_NOTIFY;
 		PostQueuedCompletionStatus(h_iocp, 1, id, &over_ex->wsa_over);
 	}
+
+
 }
 
 void WakeUpNPC(int id)
