@@ -32,6 +32,7 @@ constexpr char OP_MODE_SEND = 1;
 constexpr char OP_MODE_ACCEPT = 2;
 constexpr char OP_RANDOM_MOVE = 3;
 constexpr char OP_PLAYER_MOVE_NOTIFY = 4;
+constexpr char OP_PLAYER_HP_PLUS = 5;
 
 struct OVER_EX {
 	WSAOVERLAPPED wsa_over;
@@ -92,6 +93,8 @@ mutex sector_l;
 unordered_set<int> g_sector[S_SIZE][S_SIZE];
 
 void error_display(const char* msg, int err_no);
+
+void PlayerHPPlus(int id);
 
 void InitializeObstacle();
 
@@ -606,6 +609,11 @@ void WorkerThread() {
 			delete over_ex;
 		}
 		break;
+		case OP_PLAYER_HP_PLUS:
+		{
+			PlayerHPPlus(key);
+		}
+		break;
 		}
 	}
 }
@@ -626,6 +634,11 @@ void TimerThread()
 					//AddTimer(ev.obj_id, OP_RANDOM_MOVE, system_clock::now() + 1s);
 					OVER_EX* ex_over = new OVER_EX;
 					ex_over->op_mode = OP_RANDOM_MOVE;
+					PostQueuedCompletionStatus(h_iocp, 1, ev.obj_id, &ex_over->wsa_over);
+				}
+				if (ev.event_id == OP_PLAYER_HP_PLUS) {
+					OVER_EX* ex_over = new OVER_EX;
+					ex_over->op_mode = OP_PLAYER_HP_PLUS;
 					PostQueuedCompletionStatus(h_iocp, 1, ev.obj_id, &ex_over->wsa_over);
 				}
 			}
@@ -725,6 +738,9 @@ void AddNewClient(SOCKET ns)
 				error_display("WSARecv : ", error_no);
 			}
 		}
+
+		// 플레이어 체력 timer
+		AddTimer(i, OP_PLAYER_HP_PLUS, system_clock::now() + 5s);
 	}
 	// 다시 accept
 	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
@@ -1137,7 +1153,14 @@ void AddTimer(int obj_id, int ev_type, system_clock::time_point t) {
 	timer_l.unlock();
 }
 
-
+void PlayerHPPlus(int id) {
+	if (g_clients[id].hp < MAX_PLAYERHP) {
+		g_clients[id].hp += (MAX_PLAYERHP * 0.1f);
+		SendStatChangePacket(id);
+	}
+	// 다시 
+	AddTimer(id, OP_PLAYER_HP_PLUS , system_clock::now() + 5s);
+}
 
 int API_SendMessage(lua_State* L) {
 	int my_id = (int)lua_tointeger(L, -3);
