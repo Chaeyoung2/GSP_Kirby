@@ -67,6 +67,7 @@ struct client_info {
 	short cnt_randommove = 0;
 	short encountered_id = 0;
 	short attackme_id = 0;
+	high_resolution_clock::time_point invincible_timeout;
 };
 struct event_type {
 	int obj_id;
@@ -106,6 +107,7 @@ void ProcessMove(int id, char dir);
 void ProcessAttack(int id);
 
 void StatChange_MonsterDead(int id);
+void StatChange_MonsterCollide(int id);
 
 void WorkerThread();
 void TimerThread();
@@ -120,11 +122,13 @@ void SendEnterPacket(int to_id, int new_id);
 void SendMovePacket(int to_id, int id);
 void SendChatPacket(int to_client, int id, char* mess);
 void SendStatChangePacket(int id);
+void SendDeadPacket(int id);
 
 bool IsNear(int p1, int p2);
 bool IsCollide(int p1, int p2);
 bool IsNPC(int p1);
 bool IsObstacle(int p1);
+bool IsInvincible(int p1);
 
 int API_SendMessage(lua_State* L);
 int API_get_y(lua_State* L);
@@ -436,6 +440,17 @@ void ProcessMove(int id, char dir)
 		}
 	}
 
+	// 몬스터와 충돌하는지 (hp 처리)
+	if (false == IsInvincible(id)) { // 무적일 때는 충돌 처리 X
+		for (auto ob : new_viewlist) {
+			if (false == IsNPC(ob)) continue;
+			if (IsCollide(id, ob)) {
+				StatChange_MonsterCollide(id);
+			}
+		}
+	}
+
+
 	// 주위 npc에게 player event를 pqcs로 보낸다
 	for (auto& npc : new_viewlist) {
 		if (false == IsNPC(npc)) continue;
@@ -509,6 +524,19 @@ void StatChange_MonsterDead(int id) {
 		}
 		break;
 	}
+	SendStatChangePacket(id);
+}
+
+void StatChange_MonsterCollide(int id) {
+	g_clients[id].hp -= 30;
+	if (g_clients[id].hp < 0) { // 플레이어 사망 처리
+		g_clients[id].hp = MAX_PLAYERHP;
+		g_clients[id].exp /= 2; // 경험치 절반 깎임
+		SendLeavePacket(id, id);
+		g_clients[id].invincible_timeout = high_resolution_clock::now() + 7s;
+	}
+	else
+		g_clients[id].invincible_timeout = high_resolution_clock::now() + 1s;
 	SendStatChangePacket(id);
 }
 
@@ -852,6 +880,13 @@ bool IsObstacle(int p1) {
 	return p1 >= MAX_USER + NUM_NPC;
 }
 
+bool IsInvincible(int p1) {
+	if (g_clients[p1].invincible_timeout < high_resolution_clock::now()) {
+		return false;
+	}
+	return true;
+}
+
 void error_display(const char* msg, int err_no) {
 	WCHAR* h_mess;
 	FormatMessage(
@@ -935,7 +970,7 @@ void RandomMoveNPC(int id)
 	int sx = x / S_SIZE;
 	int sy = y / S_SIZE;
 
-	// 이동 전에 hp 확인
+	// 이동 전에 npc hp 확인
 	if (g_clients[id].hp <= 0) {
 		g_clients[id].is_active = false;
 		g_clients[id].connected = false;
@@ -1048,50 +1083,13 @@ void RandomMoveNPC(int id)
 				SendMovePacket(pl, id);
 			}
 		}
-		else {
-
-			//g_clients[pl].c_lock.unlock();
+	}
+	// 이동 후 플레이어와 충돌하는지
+	for (auto pl : n_vl) {
+		if (IsCollide(pl, id)) {
+			StatChange_MonsterCollide(pl);
 		}
 	}
-
-	//// view list 처리 (sector X) ------------------
-	//// 이동 후 viewlist
-	//unordered_set<int> n_vl;
-	//for (int i = 0; i < MAX_USER; ++i) {
-	//	if (id == i) continue;
-	//	if (false == g_clients[i].connected) continue;
-	//	if (true == IsNear(id, i))
-	//		n_vl.insert(i);
-	//}
-	//// 이동 후 처리
-	//for (auto pl : o_vl) {
-	//	if (0 < n_vl.count(pl)) {
-	//		if (0 < g_clients[pl].view_list.count(id))
-	//			SendMovePacket(pl, id);
-	//		else {
-	//			g_clients[pl].view_list.insert(id);
-	//			SendEnterPacket(pl, id);
-	//		}
-	//	}
-	//	else {
-	//		if (0 < g_clients[pl].view_list.count(id)) {
-	//			g_clients[pl].view_list.erase(id);
-	//			SendLeavePacket(pl, id);
-	//		}
-	//	}
-	//}
-	//for (auto pl : n_vl) {
-	//	if (0 == g_clients[pl].view_list.count(pl)) {
-	//		if (0 == g_clients[pl].view_list.count(id)) {
-	//			g_clients[pl].view_list.insert(id);
-	//			SendEnterPacket(pl, id);
-	//		}
-	//		else {
-	//			SendMovePacket(pl, id);
-	//		}
-	//	}
-	//}
-	//---------------------------------
 
 	// AI Script에 의한 randommove일 경우 : 3칸 이동 모두 마쳤으면 bye 채팅 메시지 출력하게끔 
 	if (g_clients[id].is_AIrandommove) {
