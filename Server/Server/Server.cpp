@@ -51,6 +51,8 @@ struct client_info {
 	char name[MAX_ID_LEN];
 	short x, y;
 	short hp;
+	short level;
+	int exp;
 	lua_State* L;
 	SOCKET sock = -1;
 	atomic_bool connected = false;
@@ -64,6 +66,7 @@ struct client_info {
 	bool is_AIrandommove = false;
 	short cnt_randommove = 0;
 	short encountered_id = 0;
+	short attackme_id = 0;
 };
 struct event_type {
 	int obj_id;
@@ -102,6 +105,8 @@ void ProcessRecv(int id, DWORD iosize);
 void ProcessMove(int id, char dir);
 void ProcessAttack(int id);
 
+void StatChange_MonsterDead(int id);
+
 void WorkerThread();
 void TimerThread();
 
@@ -114,6 +119,7 @@ void SendLoginOK(int id);
 void SendEnterPacket(int to_id, int new_id);
 void SendMovePacket(int to_id, int id);
 void SendChatPacket(int to_client, int id, char* mess);
+void SendStatChangePacket(int id);
 
 bool IsNear(int p1, int p2);
 bool IsCollide(int p1, int p2);
@@ -468,10 +474,42 @@ void ProcessAttack(int id) {
 			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
 				// 충돌
 				g_clients[i].hp -= PLAYER_ATTACKDAMAGE;
+				g_clients[i].attackme_id = id;
 			}
 		}
 	}
 
+}
+
+void StatChange_MonsterDead(int id) {
+	g_clients[id].exp += g_clients[id].level * g_clients[id].level * 2;
+	switch (g_clients[id].level) {
+	case 1:
+		if (g_clients[id].exp >= 100) {
+			g_clients[id].exp = 0;
+			g_clients[id].level++;
+		}
+		break;
+	case 2:
+		if (g_clients[id].exp >= 200) {
+			g_clients[id].exp = 0;
+			g_clients[id].level++;
+		}
+		break;
+	case 3:
+		if (g_clients[id].exp >= 400) {
+			g_clients[id].exp = 0;
+			g_clients[id].level++;
+		}
+		break;
+	case 4:
+		if (g_clients[id].exp >= 800) {
+			g_clients[id].exp = 0;
+			g_clients[id].level++;
+		}
+		break;
+	}
+	SendStatChangePacket(id);
 }
 
 void WorkerThread() {
@@ -627,6 +665,10 @@ void AddNewClient(SOCKET ns)
 		// 섹터
 		int sx = g_clients[i].sx = x / S_SIZE;
 		int sy = g_clients[i].sy = y / S_SIZE;
+		// 경험치, 레벨, hp
+		g_clients[i].hp = MAX_PLAYERHP;
+		g_clients[i].exp = 0;
+		g_clients[i].level = 1;
 		g_clients[i].c_lock.unlock();
 		// 섹터에 정보 넣기
 		sector_l.lock();
@@ -779,6 +821,17 @@ void SendChatPacket(int to_client, int id, char* mess)
 	SendPacket(to_client, &p);
 }
 
+void SendStatChangePacket(int id) {
+	sc_packet_stat_change p;
+	p.exp = g_clients[id].exp;
+	p.hp = g_clients[id].hp;
+	p.id = id;
+	p.level = g_clients[id].level;
+	p.size = sizeof(p);
+	p.type = SC_PACKET_STAT_CHANGE;
+	SendPacket(id, &p);
+}
+
 bool IsNear(int p1, int p2)
 {
 	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
@@ -895,8 +948,9 @@ void RandomMoveNPC(int id)
 		for (auto i : g_sector[sx][sy]) {
 			if (true == IsNPC(i)) continue;
 			if (true == IsObstacle(i)) continue;
+			StatChange_MonsterDead(g_clients[id].attackme_id);
 			SendLeavePacket(i, id); // player에게 npc가 leave 하게끔
-			cout << "몬스터 " << id << "(이)가 사망했습니다." << endl;
+			cout << "몬스터 " << id << "(이)가" << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
 		}
 		return;
 	}

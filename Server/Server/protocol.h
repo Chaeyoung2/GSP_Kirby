@@ -9,9 +9,9 @@ constexpr int WORLD_HEIGHT = 800;
 constexpr int MAX_STR_LEN = 100;
 constexpr int VIEW_LIMIT = 7;				// 시야 반지름, 상대방과 사이에 6개의 타일이 있어도 보여야 함.
 
-constexpr int NUM_NPC = 10000;
+constexpr int NUM_NPC = 1000;
 
-constexpr int NUM_OBSTACLE = 10000;
+constexpr int NUM_OBSTACLE = 1000;
 
 constexpr int MAX_MONSTERHP = 40;
 constexpr int MAX_PLAYERHP = 100;
@@ -90,6 +90,7 @@ struct sc_packet_stat_change {
 	short level;
 	int   exp;
 };
+
 
 
 struct cs_packet_login {

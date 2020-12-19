@@ -35,6 +35,9 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pPlayers[packet_id].ptX = ptX;
 		pPlayers[packet_id].ptY = ptY;
 		pPlayers[packet_id].connected = true;
+		pPlayers[packet_id].exp = p->exp;
+		pPlayers[packet_id].hp = p->hp;
+		pPlayers[packet_id].level = p->level;
 		//HBITMAP* hBitmaps = maingame->getBitmaps();
 		//pPlayers[packet_id].bitmap = hBitmaps[2];
 		maingame->setObjectPoint(packet_id, (float)ptX, (float)ptY);
@@ -109,6 +112,15 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		MultiByteToWideChar(CP_ACP, 0, p->message, -1, (LPWSTR)wmess, nChars);
 		wcscpy_s(pPlayers[id].chat_buf, wmess);
 		pPlayers[id].timeout = high_resolution_clock::now() + 1s;
+	}
+	break;
+	case SC_PACKET_STAT_CHANGE:
+	{
+		sc_packet_stat_change* p = reinterpret_cast<sc_packet_stat_change*>(ptr);
+		int id = p->id;
+		pPlayers[id].hp = p->hp;
+		pPlayers[id].exp = p->exp;
+		pPlayers[id].level = p->level;
 	}
 	break;
 	default:
@@ -231,13 +243,7 @@ void MainGame::Render()
 		rc.top = long(y - PLAYERCY * 0.5f);
 		rc.bottom = long(y + PLAYERCY * 0.5f);
 		if (i < MAX_USER) { // Player
-			TransparentBlt(hdcBuffer, 
-				rc.left + scrollX, rc.top + scrollY, 
-				PLAYERCX, PLAYERCY, 
-				hdcPlayer, 
-				0, 0,
-				30, 30,
-				RGB(0, 255, 255)
+			TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, PLAYERCX, PLAYERCY, hdcPlayer, 0, 0,30, 30,RGB(0, 255, 255)
 			);
 			// render Text(info)
 			if (i == myid) {
@@ -328,8 +334,21 @@ void MainGame::Render()
 				++iter;
 		}
 	}
+
 	// render BackBuffer at MainDC (Double Buffering)
 	BitBlt(hdcMain, 0, 0, WINCX, WINCY, hdcBuffer, 0, 0, SRCCOPY);
+
+	// render UI
+	{
+		RECT rc; rc.left = 0; rc.right = WINCX; rc.bottom = WINCY; rc.top = WINCX - 50;
+		TCHAR lpUI[MAX_STR_LEN];
+		wsprintfW(lpUI, TEXT("¢¾LEVEL : %d \t ¢¾HP : %d \t ¢¾EXP : %d"),
+			players[myid].level, players[myid].hp, players[myid].exp);
+		TextOut(hdcMain, rc.left, rc.bottom, (wchar_t*)lpUI, lstrlen(lpUI));
+	}
+
+
+	
 
 	DeleteDC(hdcBullet);
 	DeleteDC(hdcObstacle);

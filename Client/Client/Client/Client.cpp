@@ -157,7 +157,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
    // 타이틀바가 윈도우 잘라먹음
    int titleBarHeight = GetSystemMetrics(SM_CYCAPTION);
-   RECT rc{ 0,0,WINCX + titleBarHeight, WINCY + titleBarHeight * 2 };
+   RECT rc{ 0,0,WINCX + titleBarHeight, WINCY + titleBarHeight * 2 + 30 };
 
    HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
       100, 100, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hInstance, nullptr);

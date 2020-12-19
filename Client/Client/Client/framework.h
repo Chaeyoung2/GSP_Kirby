@@ -63,6 +63,9 @@ typedef struct tagObject {
 	short ptX;
 	short ptY;
 	char *name;
+	short hp;
+	short level;
+	int exp;
 	//RECT rect;
 	//HBITMAP bitmap;
 	TCHAR chat_buf[MAX_STR_LEN] = L"";
