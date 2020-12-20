@@ -231,24 +231,26 @@ void MainGame::Render()
 	HDC hdcMain = GetDC(g_hwnd);
 	HDC hdcBuffer = CreateCompatibleDC(hdcMain);
 	HDC hdcBackGround = CreateCompatibleDC(hdcMain);
+	HDC hdcBullet = CreateCompatibleDC(hdcMain);
+	HDC hdcBulletS = CreateCompatibleDC(hdcMain);
+	HDC hdcHPPortion = CreateCompatibleDC(hdcMain);
+	HDC hdcBUFPortion = CreateCompatibleDC(hdcMain);
 	HDC hdcPlayer = CreateCompatibleDC(hdcMain);
 	HDC hdcNPC = CreateCompatibleDC(hdcMain);
 	HDC hdcObstacle = CreateCompatibleDC(hdcMain);
-	HDC hdcBullet = CreateCompatibleDC(hdcMain);
 	HDC hdcGameover = CreateCompatibleDC(hdcMain);
 	HDC hdcAgro = CreateCompatibleDC(hdcMain);
 	HDC hdcPeace = CreateCompatibleDC(hdcMain);
-	HDC hdcHPPortion = CreateCompatibleDC(hdcMain);
-	HDC hdcBUFPortion = CreateCompatibleDC(hdcMain);
 
 	SelectObject(hdcBuffer, bitmaps[0]);
 	SelectObject(hdcBackGround, bitmaps[1]);
 	SelectObject(hdcHPPortion, bitmaps[9]);
 	SelectObject(hdcBUFPortion, bitmaps[10]);
+	SelectObject(hdcBullet, bitmaps[5]);
+	SelectObject(hdcBulletS, bitmaps[11]);
 	SelectObject(hdcPlayer, bitmaps[2]);
 	SelectObject(hdcNPC, bitmaps[3]);
 	SelectObject(hdcObstacle, bitmaps[4]);
-	SelectObject(hdcBullet, bitmaps[5]);
 	SelectObject(hdcGameover, bitmaps[6]);
 	SelectObject(hdcAgro, bitmaps[7]);
 	SelectObject(hdcPeace, bitmaps[8]);
@@ -264,6 +266,65 @@ void MainGame::Render()
 			MoveToEx(hdcBuffer, 0, TILESIZE * (i), NULL);
 			LineTo(hdcBuffer, TILESIZE * (TILESCREENMAX), TILESIZE * (i));
 		}
+		// render Bullets
+		{
+			for (auto iter = bulletList.begin(); iter != bulletList.end();) {
+				float x = (iter->x) * TILESIZE + TILESIZE * 0.5f;
+				float y = (iter->y) * TILESIZE + TILESIZE * 0.5f;
+				RECT rc;
+				if (iter->type == 0) {
+					rc.left = long(x - 30 * 0.5f);
+					rc.right = long(x + 30 * 0.5f);
+					rc.top = long(y - 30 * 0.5f);
+					rc.bottom = long(y + 30 * 0.5f);
+					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, 30, 30, hdcBullet, 0, 0, 30, 30, RGB(0, 255, 255));
+				}
+				else {
+					rc.left = long(x - 90 * 0.5f);
+					rc.right = long(x + 90 * 0.5f);
+					rc.top = long(y - 90 * 0.5f);
+					rc.bottom = long(y + 90 * 0.5f);
+					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, 90, 90, hdcBulletS, 0, 0, 30, 30, RGB(0, 255, 255));
+				}
+				if (++(iter->cur_time) > iter->timeout) {
+					iter = bulletList.erase(iter);
+				}
+				else
+					++iter;
+			}
+		}
+		// render Items
+		for (int i = MAX_USER + NUM_NPC + NUM_OBSTACLE; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
+			if (players[i].connected == false) continue;
+			OBJ obj = players[i];
+			short x = players[i].ptX * TILESIZE + TILESIZE * 0.5f;
+			short y = players[i].ptY * TILESIZE + TILESIZE * 0.5f;
+			RECT rc;
+			rc.left = long(x - PLAYERCX * 0.5f);
+			rc.right = long(x + PLAYERCX * 0.5f);
+			rc.top = long(y - PLAYERCY * 0.5f);
+			rc.bottom = long(y + PLAYERCY * 0.5f);
+			if (players[i].m_type == OTYPE_ITEM_HP) {
+				TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
+					rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
+					30, 30, /// 출력할 이미지의 너비, 높이
+					hdcHPPortion, /// 이미지 핸들
+					0, 0, /// 가져올 이미지의 시작지점 x,y 
+					30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
+					RGB(0, 255, 255) /// 투명하게 할 색상
+				);
+			}
+			else {
+				TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
+					rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
+					30, 30, /// 출력할 이미지의 너비, 높이
+					hdcBUFPortion, /// 이미지 핸들
+					0, 0, /// 가져올 이미지의 시작지점 x,y 
+					30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
+					RGB(0, 255, 255) /// 투명하게 할 색상
+				);
+			}
+		}
 		// render Players
 		for (int i = 0; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
 			if (players[i].connected == false) continue;
@@ -275,29 +336,7 @@ void MainGame::Render()
 			rc.right = long(x + PLAYERCX * 0.5f);
 			rc.top = long(y - PLAYERCY * 0.5f);
 			rc.bottom = long(y + PLAYERCY * 0.5f);
-			if(i >= MAX_USER+NUM_NPC+NUM_OBSTACLE && i < MAX_USER+NUM_NPC+NUM_OBSTACLE+NUM_ITEM) {
-				if (players[i].m_type == OTYPE_ITEM_HP) {
-					TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-						rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
-						30, 30, /// 출력할 이미지의 너비, 높이
-						hdcHPPortion, /// 이미지 핸들
-						0, 0, /// 가져올 이미지의 시작지점 x,y 
-						30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
-						RGB(0, 255, 255) /// 투명하게 할 색상
-					);
-				}
-				else {
-					TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-						rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
-						30, 30, /// 출력할 이미지의 너비, 높이
-						hdcBUFPortion, /// 이미지 핸들
-						0, 0, /// 가져올 이미지의 시작지점 x,y 
-						30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
-						RGB(0, 255, 255) /// 투명하게 할 색상
-					);
-				}
-			}
-			else if (i < MAX_USER) { // Player
+			if (i < MAX_USER) { // Player
 				TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, PLAYERCX, PLAYERCY, hdcPlayer, 0, 0, 30, 30, RGB(0, 255, 255));
 				// render Text(info)
 				if (i == myid) {
@@ -374,24 +413,7 @@ void MainGame::Render()
 				}
 			}
 		}
-		// render Bullets
-		{
-			for (auto iter = bulletList.begin(); iter != bulletList.end();) {
-				float x = (iter->x) * TILESIZE + TILESIZE * 0.5f;
-				float y = (iter->y) * TILESIZE + TILESIZE * 0.5f;
-				RECT rc;
-				rc.left = long(x - 30 * 0.5f);
-				rc.right = long(x + 30 * 0.5f);
-				rc.top = long(y - 30 * 0.5f);
-				rc.bottom = long(y + 30 * 0.5f);
-				TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, 30, 30, hdcBullet, 0, 0, 30, 30, RGB(0, 255, 255));
-				if (++(iter->cur_time) > iter->timeout) {
-					iter = bulletList.erase(iter);
-				}
-				else
-					++iter;
-			}
-		}
+
 
 		// render UI
 		{
@@ -432,12 +454,13 @@ void MainGame::Render()
 	DeleteDC(hdcGameover);
 	DeleteDC(hdcAgro);
 	DeleteDC(hdcPeace);
+	DeleteDC(hdcBulletS);
 	DeleteDC(hdcBullet);
+	DeleteDC(hdcBUFPortion);
+	DeleteDC(hdcHPPortion);
 	DeleteDC(hdcObstacle);
 	DeleteDC(hdcNPC);
 	DeleteDC(hdcPlayer);
-	DeleteDC(hdcBUFPortion);
-	DeleteDC(hdcHPPortion);
 	DeleteDC(hdcBackGround);
 	DeleteDC(hdcBuffer);
 
@@ -488,7 +511,7 @@ void MainGame::InputKeyState(int key)
 
 		ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
 	}
-	else if(key == KEY_ATTACK) {
+	else if(key >= KEY_ATTACK) {
 		if (key == 4) { // attack
 			// Send
 			cs_packet_attack* p = reinterpret_cast<cs_packet_attack*>(send_buffer);
@@ -502,10 +525,24 @@ void MainGame::InputKeyState(int key)
 			BULLET b1(players[myid].ptX, players[myid].ptY + 1, 30);
 			BULLET b2(players[myid].ptX - 1, players[myid].ptY, 30);
 			BULLET b3(players[myid].ptX + 1, players[myid].ptY, 30);
+			b0.type = 0; b1.type = 0; b2.type = 0; b3.type = 0;
 			bulletList.push_back(b0);
 			bulletList.push_back(b1);
 			bulletList.push_back(b2);
 			bulletList.push_back(b3);
+		}
+		else if (key == 10) { // attack S
+			// Send
+			cs_packet_attack* p = reinterpret_cast<cs_packet_attack*>(send_buffer);
+			p->size = sizeof(p);
+			send_wsabuf.len = sizeof(p);
+			DWORD iobyte;
+			p->type = CS_ATTACKS;
+			ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
+			// bullet list에 추가
+			BULLET b0(players[myid].ptX, players[myid].ptY, 30);
+			b0.type = 1;
+			bulletList.push_back(b0);
 		}
 		else if (key == 5) { // 1번칸 소비
 
@@ -673,6 +710,15 @@ void MainGame::LoadBitmaps()
 	}
 	else
 		bitmaps[10] = tempBitmap;
+
+	// Attack S
+	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/AttackS.bmp", IMAGE_BITMAP, 30, 30, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (NULL == tempBitmap) {
+		MessageBox(g_hwnd, L"Image/AttackS.bmp", L"Failed (LoadImage)", MB_OK);
+		return;
+	}
+	else
+		bitmaps[11] = tempBitmap;
 }
 
 void MainGame::InitNetwork()

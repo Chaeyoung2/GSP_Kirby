@@ -113,6 +113,7 @@ void ProcessPacket(int id);
 void ProcessRecv(int id, DWORD iosize);
 void ProcessMove(int id, char dir);
 void ProcessAttack(int id);
+void ProcessAttackS(int id);
 
 void StatChange_MonsterDead(int id, int mon_id);
 void StatChange_MonsterCollide(int id, int mon_id);
@@ -283,6 +284,11 @@ void ProcessPacket(int id)
 	case CS_ATTACK:
 	{
 		ProcessAttack(id);
+	}
+	break;
+	case CS_ATTACKS:
+	{
+		ProcessAttackS(id);
 	}
 	break;
 	default:
@@ -535,6 +541,72 @@ void ProcessAttack(int id) {
 					g_clients[i].c_lock.unlock();
 					char mess[MAX_STR_LEN];
 					sprintf_s(mess, "플레이어 %d이 몬스터 %d를 때려서 %d의 데미지를 입혔습니다.", id, i, PLAYER_ATTACKDAMAGE);
+					SendChatPacket(id, -1, mess); // 전챗
+				}
+			}
+		}
+	}
+
+}
+
+void ProcessAttackS(int id) {
+	// 클라이언트 id가 공격 시도.
+	short x[9], y[9]; 
+	short id_x = g_clients[id].x, id_y = g_clients[id].y;
+	for (int dir = 0; dir < 9; ++dir) {
+		if (dir == 0) {
+			x[dir] = id_x - 1;
+			y[dir] = id_y - 1;
+		}
+		else if (dir == 1) {
+			x[dir] = id_x;
+			y[dir] = id_y - 1;
+		}
+		else if (dir == 2) {
+			x[dir] = id_x + 1;
+			y[dir] = id_y - 1;
+		}
+		else if (dir == 3) {
+			x[dir] = id_x - 1;
+			y[dir] = id_y;
+		}
+		else if (dir == 4) {
+			x[dir] = id_x;
+			y[dir] = id_y;
+		}
+		else if (dir == 5) {
+			x[dir] = id_x + 1;
+			y[dir] = id_y ;
+		}
+		else if (dir == 6) {
+			x[dir] = id_x - 1;
+			y[dir] = id_y + 1;
+		}
+		else if (dir == 7) {
+			x[dir] = id_x;
+			y[dir] = id_y + 1;
+		}
+		else if (dir == 8) {
+			x[dir] = id_x + 1;
+			y[dir] = id_y + 1;
+		}
+	}
+
+	unordered_set<int> vl = g_clients[id].view_list;
+	// 플레이어 공격과 npc의 충돌 검사
+	for (auto i : vl) {
+		if (false == IsNPC(i)) continue;
+		for (int dir = 0; dir < 8; ++dir) {
+			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
+				if (false == IsInvincible(i)) {
+					// 충돌
+					g_clients[i].c_lock.lock();
+					g_clients[i].invincible_timeout = high_resolution_clock::now() + 2s;
+					g_clients[i].hp -= PLAYER_ATTACKDAMAGE * 2;
+					g_clients[i].attackme_id = id;
+					g_clients[i].c_lock.unlock();
+					char mess[MAX_STR_LEN];
+					sprintf_s(mess, "플레이어 %d이 몬스터 %d를 버프 공격 하여 %d의 데미지를 입혔습니다.", id, i, PLAYER_ATTACKDAMAGE * 2);
 					SendChatPacket(id, -1, mess); // 전챗
 				}
 			}

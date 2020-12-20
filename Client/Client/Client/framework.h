@@ -82,6 +82,7 @@ typedef struct tagBullet {
 	short y;
 	short timeout;
 	short cur_time = 0;
+	int type; // 0attack, 1attackS
 }BULLET;
 
 typedef struct tagAllChat {
