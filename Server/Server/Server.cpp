@@ -20,7 +20,7 @@ using namespace std;
 using namespace chrono;
 
 
-constexpr int S_SIZE = 50;
+constexpr int S_SIZE = 100;
 
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "MSWSock.lib")
@@ -36,6 +36,7 @@ constexpr char OP_MODE_ACCEPT = 2;
 constexpr char OP_RANDOM_MOVE = 3;
 constexpr char OP_PLAYER_MOVE_NOTIFY = 4;
 constexpr char OP_PLAYER_HP_PLUS = 5;
+constexpr char OP_PLAYER_BUF = 6;
 
 struct OVER_EX {
 	WSAOVERLAPPED wsa_over;
@@ -83,15 +84,15 @@ struct event_type {
 		return (wakeup_time > _Left.wakeup_time);
 	}
 };
-
 mutex id_lock;//아이디를 넣어줄때 상호배제해줄 락킹
-client_info g_clients[MAX_USER+NUM_NPC+NUM_OBSTACLE];
+client_info g_clients[MAX_USER+NUM_NPC+NUM_OBSTACLE+NUM_ITEM];
 HANDLE h_iocp;
 SOCKET g_listenSocket;
 OVER_EX g_accept_over; // accept용 overlapped 구조체
 priority_queue<event_type> timer_queue;
 mutex timer_l;
 mutex sector_l;
+int PLAYER_ATTACKDAMAGE = 20;
 
 unordered_set<int> g_sector[S_SIZE][S_SIZE];
 
@@ -100,6 +101,7 @@ void error_display(const char* msg, int err_no);
 void PlayerHPPlus(int id);
 
 void InitializeObstacle();
+void InitializeItem();
 
 void InitializeNPC();
 void RandomMoveNPC(int id);
@@ -114,6 +116,7 @@ void ProcessAttack(int id);
 
 void StatChange_MonsterDead(int id, int mon_id);
 void StatChange_MonsterCollide(int id, int mon_id);
+void StatChange_ItemCollide(int id, int item_id);
 
 void WorkerThread();
 void TimerThread();
@@ -128,14 +131,16 @@ void SendEnterPacket(int to_id, int new_id);
 void SendMovePacket(int to_id, int id);
 void SendChatPacket(int to_client, int id, char* mess);
 void SendStatChangePacket(int id);
-void SendDeadPacket(int id);
 
 int calcDist(int p1, int p2);
 
-bool IsNear(int p1, int p2);
 bool IsCollide(int p1, int p2);
+
+bool IsNear(int p1, int p2);
+bool IsPlayer(int p1);
 bool IsNPC(int p1);
 bool IsObstacle(int p1);
+bool IsItem(int p1);
 bool IsInvincible(int p1);
 
 int API_SendMessage(lua_State* L);
@@ -177,6 +182,9 @@ int main()
 
 	// 장애물 세팅
 	InitializeObstacle();
+
+	// 아이템 세팅
+	InitializeItem();
 
 	// timer thread 생성
 	thread timer_thread{ TimerThread };
@@ -244,6 +252,22 @@ void ProcessPacket(int id)
 			g_clients[id].c_lock.unlock();
 			SendEnterPacket(id, i);
 			WakeUpNPC(i);
+		}
+		// Obstacle
+		for (int i = MAX_USER + NUM_NPC; i < MAX_USER + NUM_NPC + NUM_OBSTACLE; ++i) {
+			if (false == IsNear(id, i)) continue;
+			g_clients[id].c_lock.lock();
+			g_clients[id].view_list.insert(i);
+			g_clients[id].c_lock.unlock();
+			SendEnterPacket(id, i);
+		}
+		// Item
+		for (int i = MAX_USER + NUM_NPC + NUM_OBSTACLE; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
+			if (false == IsNear(id, i)) continue;
+			g_clients[id].c_lock.lock();
+			g_clients[id].view_list.insert(i);
+			g_clients[id].c_lock.unlock();
+			SendEnterPacket(id, i);
 		}
 	}
 	break;
@@ -378,7 +402,6 @@ void ProcessMove(int id, char dir)
 	}
 
 	// 뷰 리스트 처리
-	//// 이동 후 객체-객체가 서로 보이나 안 보이나 처리
 	unordered_set<int> new_viewlist; 
 	for(auto i : g_sector[cur_sx][cur_sy]){
 		if (id == i) continue;
@@ -388,7 +411,7 @@ void ProcessMove(int id, char dir)
 		}
 	}
 	for(auto i : g_sector[cur_sx][cur_sy]){
-		if (false == IsNPC(i) && false == IsObstacle(i)) continue;
+		// if (false == IsNPC(i) && false == IsObstacle(i)) continue;
 		if (true == IsNear(id, i)) {
 			new_viewlist.insert(i);
 			if(true == IsNPC(i))
@@ -396,15 +419,17 @@ void ProcessMove(int id, char dir)
 		}
 	}
 
-	// 시야 처리 (3차 시도)-------------------------------
-	for (int ob : new_viewlist) { // 이동 후 new viewlist (시야에 들어온) 객체에 대해 처리 - enter할 건지, move만 할 건지
+	// 시야 처리
+	for (int ob : new_viewlist) {
+		// 이동 후 new viewlist (시야에 들어온) ob에 대해 처리
 		if (0 == old_viewlist.count(ob)) { // 이동 전에 시야에 없었던 경우
 			g_clients[id].c_lock.lock();
 			g_clients[id].view_list.insert(ob); // 이동한 클라이언트(id)의 실제 뷰리스트에 넣는다
 			g_clients[id].c_lock.unlock();
 			SendEnterPacket(id, ob); // 이동한 클라이언트(id)에게 시야에 들어온 ob를 enter하게 한다
 
-			if (false == IsNPC(ob) && false == IsObstacle(ob)) {
+			// 이번에는 뷰리스트에 있는 ob의 ! 뷰리스트 처리.
+			if (true == IsPlayer(ob)) {
 				if (0 == g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob의 뷰리스트에 id가 없었다면
 					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.insert(id); // 시야에 들어온 ob의 뷰리스트에 id를 넣어주고
@@ -417,12 +442,11 @@ void ProcessMove(int id, char dir)
 			}
 		}
 		else {  // 이동 전에 시야에 있었던 경우
-			if (false == IsNPC(ob) && false == IsObstacle(ob)) {
+			if (true == IsPlayer(ob)) {
 				if (0 != g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob가 id뷰리스트에 원래 있었ㄷ면
 					SendMovePacket(ob, id); // ob에게 id move 패킷 보냄
 				}
-				else // id가 ob의 뷰리스트에 없었다면
-				{
+				else{ // id가 ob의 뷰리스트에 없었다면 
 					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.insert(id); // ob의 뷰리스트에 id 넣어줌 
 					g_clients[ob].c_lock.unlock();
@@ -436,8 +460,8 @@ void ProcessMove(int id, char dir)
 			g_clients[id].c_lock.lock();
 			g_clients[id].view_list.erase(ob); // 이동한 id의 뷰리스트에서 ob를 삭제
 			g_clients[id].c_lock.unlock();
-			SendLeavePacket(id, ob); // id가 ob를 leave 하게끔
-			if (false == IsNPC(ob) && false == IsObstacle(ob)) {
+			SendLeavePacket(id, ob);
+			if (true == IsPlayer(ob)) {
 				if (0 != g_clients[ob].view_list.count(id)) { // ob의 뷰리스트에 id가 있었다면
 					g_clients[ob].c_lock.lock();
 					g_clients[ob].view_list.erase(id); // ob의 뷰리스트에서도 id를 삭제
@@ -449,11 +473,18 @@ void ProcessMove(int id, char dir)
 	}
 
 	// 몬스터와 충돌하는지 (hp 처리)
+	// 아이템과 충돌하는지
 	if (false == IsInvincible(id)) { // 무적일 때는 충돌 처리 X
 		for (auto ob : new_viewlist) {
-			if (false == IsNPC(ob)) continue;
-			if (IsCollide(id, ob)) {
-				StatChange_MonsterCollide(id, ob);
+			if (IsNPC(ob)) {
+				if (IsCollide(id, ob)) {
+					StatChange_MonsterCollide(id, ob);
+				}
+			}
+			else if (IsItem(ob)) {
+				if (IsCollide(id, ob)) {
+					StatChange_ItemCollide(id, ob);
+				}
 			}
 		}
 	}
@@ -495,12 +526,15 @@ void ProcessAttack(int id) {
 		if (false == IsNPC(i)) continue;
 		for (int dir = 0; dir < 4; ++dir) {
 			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
-				// 충돌
-				g_clients[i].hp -= PLAYER_ATTACKDAMAGE;
-				g_clients[i].attackme_id = id;		
-				char mess[MAX_STR_LEN];
-				sprintf_s(mess, "플레이어 %d이 몬스터 %d를 때려서 %d의 데미지를 입혔습니다.", id, i, PLAYER_ATTACKDAMAGE);
-				SendChatPacket(id, -1, mess); // 전챗
+				if (false == IsInvincible(i)) {
+					// 충돌
+					g_clients[i].invincible_timeout = high_resolution_clock::now() + 2s;
+					g_clients[i].hp -= PLAYER_ATTACKDAMAGE;
+					g_clients[i].attackme_id = id;
+					char mess[MAX_STR_LEN];
+					sprintf_s(mess, "플레이어 %d이 몬스터 %d를 때려서 %d의 데미지를 입혔습니다.", id, i, PLAYER_ATTACKDAMAGE);
+					SendChatPacket(id, -1, mess); // 전챗
+				}
 			}
 		}
 	}
@@ -538,9 +572,14 @@ void StatChange_MonsterDead(int id, int mon_id) {
 			g_clients[id].level++;
 		}
 		break;
+	default:
+		if (g_clients[id].exp >= 1000 + g_clients[id].level * 100) {
+			g_clients[id].exp = 0;
+			g_clients[id].level++;
+		}
 	}
 	SendStatChangePacket(id); // 상태 바뀜 패킷
-	cout << "몬스터 " << id << "(이)가" << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
+	cout << "몬스터 " << mon_id << "(이)가 " << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
 	char mess[MAX_STR_LEN];
 	sprintf_s(mess, "플레이어 %d가 몬스터 %d를 무찔러서 %d의 경험치를 얻었습니다.", id, mon_id, exp);
 	SendChatPacket(id, -1, mess); // 전챗 패킷
@@ -551,18 +590,55 @@ void StatChange_MonsterCollide(int id, int mon_id) {
 	g_clients[id].hp -= damage;
 	if (g_clients[id].hp < 0) { // 플레이어 사망 처리
 		g_clients[id].hp = MAX_PLAYERHP;
-		g_clients[id].exp /= 2; // 경험치 절반 깎임S
+		g_clients[id].exp /= 2; // 경험치 절반 깎임
+		g_clients[id].x = rand() % WORLD_WIDTH;
+		g_clients[id].y = rand() % WORLD_HEIGHT;
 		SendLeavePacket(id, id);
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 7s;
 	}
 	else {
-		g_clients[id].invincible_timeout = high_resolution_clock::now() + 3s;
-		cout << "몬스터 " << id << "(이)가" << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
+		g_clients[id].invincible_timeout = high_resolution_clock::now() + 2s;
+		cout << "몬스터 " << mon_id << "의 공격으로 플레이어 " << id << "가 " << damage << "의 데미지를 입습니다." << endl;
 		char mess[MAX_STR_LEN];
-		sprintf_s(mess, "몬스터 %d의 공격으로 플레이어 %d이 %d의 데미지를 얻었습니다.", mon_id, id, damage);
+		sprintf_s(mess, "몬스터 %d의 공격으로 플레이어 %d이 %d의 데미지를 입었습니다.", mon_id, id, damage);
 		SendChatPacket(id, -1, mess); // 전챗
 	}
 	SendStatChangePacket(id); // 상태 바뀜 패킷
+}
+
+void StatChange_ItemCollide(int id, int item_id) {
+	// 아이템 삭제
+	g_clients[item_id].is_active = false;
+	g_clients[item_id].connected = false;
+	int sx = g_clients[item_id].sx = g_clients[item_id].x / S_SIZE;
+	int sy = g_clients[item_id].sy = g_clients[item_id].y / S_SIZE;
+	// 섹터에서 삭제
+	sector_l.lock();
+	g_sector[sx][sy].erase(item_id);
+	sector_l.unlock();
+	// 메시지, 플레이어 hp 처리
+	char mess[MAX_STR_LEN];
+	if (g_clients[item_id].m_type == OTYPE_ITEM_HP) { // hp 포션일 경우
+		int plusHP = PLUS_ITEMHP;
+		g_clients[id].hp += plusHP;
+		g_clients[id].invincible_timeout = high_resolution_clock::now() + 2s;
+		if (g_clients[id].hp > MAX_PLAYERHP) {
+			g_clients[id].hp = MAX_PLAYERHP;
+		}
+		cout << "플레이어 " << id << "(이)가 HP 포션을 먹어" << plusHP << "의 HP를 얻습니다." << endl;
+		sprintf_s(mess, "플레이어 %d가 HP 포션을 먹어 %d의 HP를 얻습니다.", id, plusHP);
+	}
+	else {
+		PLAYER_ATTACKDAMAGE = 40;
+		cout << "플레이어 " << id << "(이)가 버프 포션을 먹어 3초간 공격력 2배 버프를 얻습니다." << endl;
+		sprintf_s(mess, "플레이어 %d가 버프 포션을 먹어 3초간 공격력 2배 버프를 얻습니다.", id);		
+		// 플레이어 체력 timer
+		AddTimer(id, OP_PLAYER_BUF, system_clock::now() + 3s);
+	}
+	SendChatPacket(id, -1, mess); // 전챗
+
+	SendStatChangePacket(id); // 상태 바뀜 패킷
+
 }
 
 void WorkerThread() {
@@ -634,6 +710,11 @@ void WorkerThread() {
 		case OP_PLAYER_HP_PLUS:
 		{
 			PlayerHPPlus(key);
+		}
+		break;
+		case OP_PLAYER_BUF:
+		{
+			PLAYER_ATTACKDAMAGE = 20;
 		}
 		break;
 		}
@@ -865,6 +946,7 @@ void SendEnterPacket(int to_id, int new_id)
 	SendPacket(to_id, &p);
 }
 
+
 void SendMovePacket(int to_id, int id)
 {
 	sc_packet_move p;
@@ -898,6 +980,7 @@ void SendStatChangePacket(int id) {
 	SendPacket(id, &p);
 }
 
+
 int calcDist(int p1, int p2) {
 	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
 	dist += (g_clients[p1].y - g_clients[p2].y) * (g_clients[p1].y - g_clients[p2].y);
@@ -923,13 +1006,21 @@ bool IsCollide(int p1, int p2) {
 	return (g_clients[p1].x == g_clients[p2].x && g_clients[p1].y == g_clients[p2].y);
 }
 
+bool IsPlayer(int p1) {
+	return p1 < MAX_USER;
+}
+
 bool IsNPC(int p1)
 {
 	return p1 >= MAX_USER && p1 < NUM_NPC + MAX_USER;
 }
 
 bool IsObstacle(int p1) {
-	return p1 >= MAX_USER + NUM_NPC;
+	return p1 >= MAX_USER + NUM_NPC && p1 < NUM_NPC + MAX_USER + NUM_OBSTACLE;
+}
+
+bool IsItem(int p1) {
+	return p1 >= MAX_USER + NUM_NPC + NUM_OBSTACLE &&  p1 < NUM_NPC + MAX_USER + NUM_OBSTACLE + NUM_ITEM;
 }
 
 bool IsInvincible(int p1) {
@@ -999,10 +1090,10 @@ void InitializeObstacle() {
 //	#ifdef _DEBUG
 	cout << "Initializing Obstacles\n";
 	//#endif
-	int id = MAX_USER + NUM_NPC;
 	for (int i = MAX_USER+NUM_NPC; i < MAX_USER + NUM_NPC +NUM_OBSTACLE; ++i) {
 		g_clients[i].x = rand() % WORLD_WIDTH;
 		g_clients[i].y = rand() % WORLD_HEIGHT;
+		g_clients[i].id = i;
 		// 섹터
 		int sx = g_clients[i].x / S_SIZE;
 		int sy = g_clients[i].y / S_SIZE;
@@ -1013,6 +1104,28 @@ void InitializeObstacle() {
 	}
 
 	cout << "Initializing Obstacles finishied.\n";
+}
+
+void InitializeItem() {
+	// 10000개 랜덤 생성 : 배열
+//	#ifdef _DEBUG
+	cout << "Initializing Items\n";
+	//#endif
+	for (int i = MAX_USER + NUM_NPC + NUM_OBSTACLE; i < MAX_USER + NUM_NPC + NUM_OBSTACLE+NUM_ITEM; ++i) {
+		g_clients[i].x = rand() % WORLD_WIDTH;
+		g_clients[i].y = rand() % WORLD_HEIGHT;
+		g_clients[i].m_type = rand() % 2 + OTYPE_ITEM_HP;
+		g_clients[i].id = i;
+		// 섹터
+		int sx = g_clients[i].x / S_SIZE;
+		int sy = g_clients[i].y / S_SIZE;
+		// 섹터에 정보 넣기
+		sector_l.lock();
+		g_sector[sx][sy].insert(i);
+		sector_l.unlock();
+	}
+
+	cout << "Initializing Items finishied.\n";
 }
 
 void RandomMoveNPC(int id)
@@ -1033,12 +1146,11 @@ void RandomMoveNPC(int id)
 		sector_l.lock();
 		g_sector[sx][sy].erase(id);
 		sector_l.unlock();
+		StatChange_MonsterDead(g_clients[id].attackme_id, id);
 		for (auto i : g_sector[sx][sy]) {
-			if (true == IsNPC(i)) continue;
-			if (true == IsObstacle(i)) continue;
-			StatChange_MonsterDead(g_clients[id].attackme_id, id);
-			SendLeavePacket(i, id); // player에게 npc가 leave 하게끔
-
+			if (IsPlayer(i)) {
+				SendLeavePacket(i, id); // player에게 npc가 leave 하게끔
+			}
 		}
 		return;
 	}

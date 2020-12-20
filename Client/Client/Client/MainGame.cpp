@@ -79,19 +79,19 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 	{
 		sc_packet_enter* packet = reinterpret_cast<sc_packet_enter*>(ptr);
 		int packet_id = packet->id;
-		pl.lock();
-		pPlayers[packet_id].connected = true;
-		//pPlayers[packet_id].o_type = packet->o_type;
-		//memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
-		pPlayers[packet_id].id = packet_id;
-		pPlayers[packet_id].ptX = packet->x;
-		pPlayers[packet_id].ptY = packet->y;
-		pPlayers[packet_id].name = new char[MAX_ID_LEN];
-		pPlayers[packet_id].m_type = packet->o_type;
-		ZeroMemory(pPlayers[packet_id].name, MAX_ID_LEN);
-		memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
-		pl.unlock();
-		maingame->setObjectPoint(packet_id, packet->x, packet->y);
+			pl.lock();
+			pPlayers[packet_id].connected = true;
+			//pPlayers[packet_id].o_type = packet->o_type;
+			//memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
+			pPlayers[packet_id].id = packet_id;
+			pPlayers[packet_id].ptX = packet->x;
+			pPlayers[packet_id].ptY = packet->y;
+			pPlayers[packet_id].name = new char[MAX_ID_LEN];
+			pPlayers[packet_id].m_type = packet->o_type;
+			ZeroMemory(pPlayers[packet_id].name, MAX_ID_LEN);
+			memcpy(pPlayers[packet_id].name, packet->name, strlen(packet->name));
+			pl.unlock();
+			maingame->setObjectPoint(packet_id, packet->x, packet->y);
 		// maingame->setObjectRect(packet_id);
 	}
 	break;
@@ -238,9 +238,13 @@ void MainGame::Render()
 	HDC hdcGameover = CreateCompatibleDC(hdcMain);
 	HDC hdcAgro = CreateCompatibleDC(hdcMain);
 	HDC hdcPeace = CreateCompatibleDC(hdcMain);
+	HDC hdcHPPortion = CreateCompatibleDC(hdcMain);
+	HDC hdcBUFPortion = CreateCompatibleDC(hdcMain);
 
 	SelectObject(hdcBuffer, bitmaps[0]);
 	SelectObject(hdcBackGround, bitmaps[1]);
+	SelectObject(hdcHPPortion, bitmaps[9]);
+	SelectObject(hdcBUFPortion, bitmaps[10]);
 	SelectObject(hdcPlayer, bitmaps[2]);
 	SelectObject(hdcNPC, bitmaps[3]);
 	SelectObject(hdcObstacle, bitmaps[4]);
@@ -261,7 +265,7 @@ void MainGame::Render()
 			LineTo(hdcBuffer, TILESIZE * (TILESCREENMAX), TILESIZE * (i));
 		}
 		// render Players
-		for (int i = 0; i < MAX_USER + NUM_NPC + NUM_OBSTACLE; ++i) {
+		for (int i = 0; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
 			if (players[i].connected == false) continue;
 			OBJ obj = players[i];
 			short x = players[i].ptX * TILESIZE + TILESIZE * 0.5f;
@@ -271,7 +275,29 @@ void MainGame::Render()
 			rc.right = long(x + PLAYERCX * 0.5f);
 			rc.top = long(y - PLAYERCY * 0.5f);
 			rc.bottom = long(y + PLAYERCY * 0.5f);
-			if (i < MAX_USER) { // Player
+			if(i >= MAX_USER+NUM_NPC+NUM_OBSTACLE && i < MAX_USER+NUM_NPC+NUM_OBSTACLE+NUM_ITEM) {
+				if (players[i].m_type == OTYPE_ITEM_HP) {
+					TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
+						rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
+						30, 30, /// 출력할 이미지의 너비, 높이
+						hdcHPPortion, /// 이미지 핸들
+						0, 0, /// 가져올 이미지의 시작지점 x,y 
+						30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
+						RGB(0, 255, 255) /// 투명하게 할 색상
+					);
+				}
+				else {
+					TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
+						rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
+						30, 30, /// 출력할 이미지의 너비, 높이
+						hdcBUFPortion, /// 이미지 핸들
+						0, 0, /// 가져올 이미지의 시작지점 x,y 
+						30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
+						RGB(0, 255, 255) /// 투명하게 할 색상
+					);
+				}
+			}
+			else if (i < MAX_USER) { // Player
 				TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, PLAYERCX, PLAYERCY, hdcPlayer, 0, 0, 30, 30, RGB(0, 255, 255));
 				// render Text(info)
 				if (i == myid) {
@@ -315,7 +341,7 @@ void MainGame::Render()
 					TextOut(hdcBuffer, rc.left + 5 + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
 				}
 			}
-			else {
+			else if( MAX_USER+NUM_NPC <= i && i < MAX_USER+NUM_NPC+NUM_OBSTACLE) {
 				TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
 					rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
 					30, 30, /// 출력할 이미지의 너비, 높이
@@ -325,6 +351,7 @@ void MainGame::Render()
 					RGB(0, 255, 255) /// 투명하게 할 색상
 				);
 			}
+			
 			// chat message
 			if (high_resolution_clock::now() < obj.timeout) {
 				TextOut(hdcBuffer, rc.left + scrollX, y + scrollY, obj.chat_buf, lstrlen(obj.chat_buf));
@@ -409,6 +436,8 @@ void MainGame::Render()
 	DeleteDC(hdcObstacle);
 	DeleteDC(hdcNPC);
 	DeleteDC(hdcPlayer);
+	DeleteDC(hdcBUFPortion);
+	DeleteDC(hdcHPPortion);
 	DeleteDC(hdcBackGround);
 	DeleteDC(hdcBuffer);
 
@@ -619,6 +648,26 @@ void MainGame::LoadBitmaps()
 	}
 	else
 		bitmaps[8] = tempBitmap;
+
+
+	// HPPortion
+	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/hpportion.bmp", IMAGE_BITMAP, 30, 30, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (NULL == tempBitmap) {
+		MessageBox(g_hwnd, L"Image/hpportion.bmp", L"Failed (LoadImage)", MB_OK);
+		return;
+	}
+	else
+		bitmaps[9] = tempBitmap;
+
+
+	// BufPortion
+	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/bufportion.bmp", IMAGE_BITMAP, 30, 30, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (NULL == tempBitmap) {
+		MessageBox(g_hwnd, L"Image/bufportion.bmp", L"Failed (LoadImage)", MB_OK);
+		return;
+	}
+	else
+		bitmaps[10] = tempBitmap;
 }
 
 void MainGame::InitNetwork()

@@ -12,11 +12,20 @@ constexpr int VIEW_LIMIT = 7;				// 시야 반지름, 상대방과 사이에 6개의 타일이 있
 constexpr int NUM_NPC = 10000;
 
 constexpr int NUM_OBSTACLE = 1000;
+constexpr int NUM_ITEM = 10000;
 
 constexpr int MAX_MONSTERHP = 40;
 constexpr int MAX_PLAYERHP = 100;
-constexpr int PLAYER_ATTACKDAMAGE = 50;
-constexpr int MONSTER_ATTACKDAMAGE = 20;
+constexpr int MONSTER_ATTACKDAMAGE = 10;
+
+
+constexpr int PLUS_ITEMHP = 50;
+
+constexpr int OTYPE_NPC_PEACE = 0;
+constexpr int OTYPE_NPC_ROAMING = 1;
+constexpr int OTYPE_NPC_AGRO = 2;
+constexpr int OTYPE_ITEM_HP = 3;
+constexpr int OTYPE_ITEM_BUF = 4;
 
 #pragma pack (push, 1)
 
@@ -34,6 +43,7 @@ constexpr char CS_ATTACK	= 2;
 constexpr char CS_CHAT		= 3;
 constexpr char CS_LOGOUT	= 4;
 constexpr char CS_TELEORT	= 5;				// 부하 테스트용 동접 테스트를 위해 텔러포트로 Hot Spot 해소
+constexpr char CS_PORTION = 6;
 
 
 struct sc_packet_login_ok {
@@ -133,6 +143,8 @@ struct cs_packet_teleport {
 	char type;
 	short x, y;
 };
+
+
 
 #pragma pack (pop)
 

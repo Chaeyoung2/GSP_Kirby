@@ -202,6 +202,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         str[len + 1] = 0;
         if (wParam == 'a' || wParam == 'A') {
             mainGame.InputKeyState(4); // attack
+        } else if (wParam == '1') {
+                mainGame.InputKeyState(5); // 1번 아이템 소비
+            }
+        else if (wParam == '2') {
+            mainGame.InputKeyState(6); // 2번 아이템 소비
+        }
+        else if (wParam == '3') {
+            mainGame.InputKeyState(7); //  3번 아이템 소비
+        }
+        else if (wParam == '4') {
+            mainGame.InputKeyState(8); //  4번 아이템 소비
+        }
+        else if (wParam == '5') {
+            mainGame.InputKeyState(9); //  5번 아이템 소비
         }
     }
     break;
