@@ -18,7 +18,6 @@ constexpr int MAX_MONSTERHP = 40;
 constexpr int MAX_PLAYERHP = 100;
 constexpr int MONSTER_ATTACKDAMAGE = 10;
 
-
 constexpr int PLUS_ITEMHP = 50;
 
 constexpr int OTYPE_NPC_PEACE = 0;

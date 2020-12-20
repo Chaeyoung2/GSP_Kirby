@@ -489,22 +489,27 @@ void MainGame::InputKeyState(int key)
 		ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
 	}
 	else if(key == KEY_ATTACK) {
-		// Send
-		cs_packet_attack* p = reinterpret_cast<cs_packet_attack*>(send_buffer);
-		p->size = sizeof(p);
-		send_wsabuf.len = sizeof(p);
-		DWORD iobyte;
-		p->type = CS_ATTACK;
-		ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
-		// bullet list에 4개 추가
-		BULLET b0(players[myid].ptX, players[myid].ptY - 1, 30);
-		BULLET b1(players[myid].ptX, players[myid].ptY + 1, 30);
-		BULLET b2(players[myid].ptX - 1, players[myid].ptY, 30);
-		BULLET b3(players[myid].ptX + 1, players[myid].ptY, 30);
-		bulletList.push_back(b0);
-		bulletList.push_back(b1);
-		bulletList.push_back(b2);
-		bulletList.push_back(b3);
+		if (key == 4) { // attack
+			// Send
+			cs_packet_attack* p = reinterpret_cast<cs_packet_attack*>(send_buffer);
+			p->size = sizeof(p);
+			send_wsabuf.len = sizeof(p);
+			DWORD iobyte;
+			p->type = CS_ATTACK;
+			ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
+			// bullet list에 4개 추가
+			BULLET b0(players[myid].ptX, players[myid].ptY - 1, 30);
+			BULLET b1(players[myid].ptX, players[myid].ptY + 1, 30);
+			BULLET b2(players[myid].ptX - 1, players[myid].ptY, 30);
+			BULLET b3(players[myid].ptX + 1, players[myid].ptY, 30);
+			bulletList.push_back(b0);
+			bulletList.push_back(b1);
+			bulletList.push_back(b2);
+			bulletList.push_back(b3);
+		}
+		else if (key == 5) { // 1번칸 소비
+
+		}
 	}
 
 	if (ret) {

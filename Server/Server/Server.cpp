@@ -287,7 +287,7 @@ void ProcessPacket(int id)
 	break;
 	default:
 	{
-#ifdef DEBUG
+#ifdef _DEBUG
 		cout << "Unkown Packet type[" << p_type << "] from Client [" << id << "]\n";
 #endif
 		while (true);
@@ -361,7 +361,7 @@ void ProcessMove(int id, char dir)
 		if (x < WORLD_WIDTH - 1) x++;
 		break;
 	default:
-#ifdef DEBUG
+#ifdef _DEBUG
 		cout << "Unknown Direction in CS_MOVE packet\n";
 #endif
 		while (true);
@@ -528,9 +528,11 @@ void ProcessAttack(int id) {
 			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
 				if (false == IsInvincible(i)) {
 					// 충돌
+					g_clients[i].c_lock.lock();
 					g_clients[i].invincible_timeout = high_resolution_clock::now() + 2s;
 					g_clients[i].hp -= PLAYER_ATTACKDAMAGE;
 					g_clients[i].attackme_id = id;
+					g_clients[i].c_lock.unlock();
 					char mess[MAX_STR_LEN];
 					sprintf_s(mess, "플레이어 %d이 몬스터 %d를 때려서 %d의 데미지를 입혔습니다.", id, i, PLAYER_ATTACKDAMAGE);
 					SendChatPacket(id, -1, mess); // 전챗
@@ -546,6 +548,7 @@ void StatChange_MonsterDead(int id, int mon_id) {
 	int exp = g_clients[id].level * g_clients[id].level * 2;
 	if (mon_type == 1 || mon_type == 2)
 		exp *= 2;
+	g_clients[id].c_lock.lock();
 	g_clients[id].exp += exp;
 	switch (g_clients[id].level) {
 	case 1:
@@ -578,8 +581,12 @@ void StatChange_MonsterDead(int id, int mon_id) {
 			g_clients[id].level++;
 		}
 	}
+	g_clients[id].c_lock.unlock();
 	SendStatChangePacket(id); // 상태 바뀜 패킷
+
+#ifdef _DEBUG
 	cout << "몬스터 " << mon_id << "(이)가 " << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
+#endif
 	char mess[MAX_STR_LEN];
 	sprintf_s(mess, "플레이어 %d가 몬스터 %d를 무찔러서 %d의 경험치를 얻었습니다.", id, mon_id, exp);
 	SendChatPacket(id, -1, mess); // 전챗 패킷
@@ -587,18 +594,23 @@ void StatChange_MonsterDead(int id, int mon_id) {
 
 void StatChange_MonsterCollide(int id, int mon_id) {
 	int damage = MONSTER_ATTACKDAMAGE;
+	g_clients[id].c_lock.lock();
 	g_clients[id].hp -= damage;
 	if (g_clients[id].hp < 0) { // 플레이어 사망 처리
 		g_clients[id].hp = MAX_PLAYERHP;
 		g_clients[id].exp /= 2; // 경험치 절반 깎임
 		g_clients[id].x = rand() % WORLD_WIDTH;
 		g_clients[id].y = rand() % WORLD_HEIGHT;
-		SendLeavePacket(id, id);
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 7s;
+		g_clients[id].c_lock.unlock();
+		SendLeavePacket(id, id);
 	}
 	else {
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 2s;
+		g_clients[id].c_lock.unlock();
+#ifdef _DEBUG
 		cout << "몬스터 " << mon_id << "의 공격으로 플레이어 " << id << "가 " << damage << "의 데미지를 입습니다." << endl;
+#endif
 		char mess[MAX_STR_LEN];
 		sprintf_s(mess, "몬스터 %d의 공격으로 플레이어 %d이 %d의 데미지를 입었습니다.", mon_id, id, damage);
 		SendChatPacket(id, -1, mess); // 전챗
@@ -608,8 +620,10 @@ void StatChange_MonsterCollide(int id, int mon_id) {
 
 void StatChange_ItemCollide(int id, int item_id) {
 	// 아이템 삭제
+	g_clients[item_id].c_lock.lock();
 	g_clients[item_id].is_active = false;
 	g_clients[item_id].connected = false;
+	g_clients[item_id].c_lock.unlock();
 	int sx = g_clients[item_id].sx = g_clients[item_id].x / S_SIZE;
 	int sy = g_clients[item_id].sy = g_clients[item_id].y / S_SIZE;
 	// 섹터에서 삭제
@@ -620,17 +634,23 @@ void StatChange_ItemCollide(int id, int item_id) {
 	char mess[MAX_STR_LEN];
 	if (g_clients[item_id].m_type == OTYPE_ITEM_HP) { // hp 포션일 경우
 		int plusHP = PLUS_ITEMHP;
+		g_clients[item_id].c_lock.lock();
 		g_clients[id].hp += plusHP;
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 2s;
 		if (g_clients[id].hp > MAX_PLAYERHP) {
 			g_clients[id].hp = MAX_PLAYERHP;
 		}
+		g_clients[item_id].c_lock.unlock();
+#ifdef _DEBUG
 		cout << "플레이어 " << id << "(이)가 HP 포션을 먹어" << plusHP << "의 HP를 얻습니다." << endl;
+#endif
 		sprintf_s(mess, "플레이어 %d가 HP 포션을 먹어 %d의 HP를 얻습니다.", id, plusHP);
 	}
 	else {
 		PLAYER_ATTACKDAMAGE = 40;
+#ifdef _DEBUG
 		cout << "플레이어 " << id << "(이)가 버프 포션을 먹어 3초간 공격력 2배 버프를 얻습니다." << endl;
+#endif
 		sprintf_s(mess, "플레이어 %d가 버프 포션을 먹어 3초간 공격력 2배 버프를 얻습니다.", id);		
 		// 플레이어 체력 timer
 		AddTimer(id, OP_PLAYER_BUF, system_clock::now() + 3s);
@@ -654,9 +674,9 @@ void WorkerThread() {
 		WSAOVERLAPPED* lpover;
 		int ret = GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
 		key = static_cast<int>(iocp_key);
-#ifdef DEBUG
-		cout << "Completion Detected\n";
-#endif
+//#ifdef _DEBUG
+//		cout << "Completion Detected\n";
+//#endif
 		if (FALSE == ret) { // max user exceed 문제 방지. // 0이 나오면 진행하지 않는다.
 			int error_no = WSAGetLastError();
 			if (64 == error_no) { // 
@@ -679,9 +699,9 @@ void WorkerThread() {
 				DisconnectClient(key);
 			}
 			else { // 패킷 처리
-#ifdef DEBUG
-				cout << "Packet from Client [" << key << "]\n";
-#endif
+//#ifdef _DEBUG
+//				cout << "Packet from Client [" << key << "]\n";
+//#endif
 				ProcessRecv(key, io_size);
 			}
 		}
@@ -860,7 +880,9 @@ void DisconnectClient(int id)
 		if (true == g_clients[i].connected) {
 			if (i != id) {
 				if (0 != g_clients[i].view_list.count(id)) {// 뷰리스트에 있는지 확인하고 지움
+					g_clients[i].c_lock.lock();
 					g_clients[i].view_list.erase(id);
+					g_clients[i].c_lock.unlock();
 					SendLeavePacket(i, id);
 				}
 //				else { // 없으면 지울 필요도 없고 패킷 보낼 필요도 없음

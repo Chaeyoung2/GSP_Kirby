@@ -126,7 +126,7 @@ void SendPacket(int cl, void* packet)
 void ProcessPacket(int ci, unsigned char packet[])
 {
 	switch (packet[1]) {
-	case SC_MOVEPLAYER: {
+	case SC_PACKET_MOVE: {
 		sc_packet_move* move_packet = reinterpret_cast<sc_packet_move*>(packet);
 		if (move_packet->id < MAX_CLIENTS) {
 			int my_id = client_map[move_packet->id];
@@ -145,9 +145,9 @@ void ProcessPacket(int ci, unsigned char packet[])
 		}
 	}
 					   break;
-	case SC_ENTER: break;
-	case SC_LEAVE: break;
-	case SC_LOGIN_OK:
+	case SC_PACKET_ENTER: break;
+	case SC_PACKET_LEAVE: break;
+	case SC_PACKET_LOGIN_OK:
 	{
 		g_clients[ci].connected = true;
 		active_clients++;
@@ -164,7 +164,9 @@ void ProcessPacket(int ci, unsigned char packet[])
 		//SendPacket(my_id, &t_packet);
 	}
 	break;
-	case SC_CHAT: break;
+	case SC_PACKET_CHAT: break;
+	case SC_PACKET_LOGIN_FAIL: break;
+	case SC_PACKET_STAT_CHANGE: break;
 	default: 
 		MessageBox(hWnd, L"Unknown Packet Type", L"ERROR", 0);
 		while (true);
