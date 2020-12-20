@@ -21,6 +21,7 @@
 #include <mutex>
 #include <chrono>
 #include <list>
+#include <queue>
 // 자체 헤더 파일
 #include "../../../Server/Server/protocol.h"
 using namespace std;
@@ -82,6 +83,11 @@ typedef struct tagBullet {
 	short timeout;
 	short cur_time = 0;
 }BULLET;
+
+typedef struct tagAllChat {
+	TCHAR chat_buf[MAX_STR_LEN] = L"";
+	high_resolution_clock::time_point timeout;
+}ALLCHAT;
 
 // const
 constexpr int BUF_SIZE = 200;

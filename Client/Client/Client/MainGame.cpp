@@ -17,6 +17,7 @@ char	recv_buffer[BUF_SIZE] = "";
 DWORD		in_packet_size = 0;
 int		saved_packet_size = 0;
 DWORD send_last_time = 0; // 마지막으로 send하고 얼마나 지났는지
+list<ALLCHAT> allchatList;
 
 void ProcessPacket(char* ptr, MainGame* maingame)
 {
@@ -115,12 +116,24 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 	{
 		sc_packet_chat* p = reinterpret_cast<sc_packet_chat*>(ptr);
 		int id = p->id;
-		WCHAR* wmess;
-		int nChars = MultiByteToWideChar(CP_ACP, 0, p->message, -1, NULL, 0);
-		wmess = new WCHAR[nChars];
-		MultiByteToWideChar(CP_ACP, 0, p->message, -1, (LPWSTR)wmess, nChars);
-		wcscpy_s(pPlayers[id].chat_buf, wmess);
-		pPlayers[id].timeout = high_resolution_clock::now() + 1s;
+		if (id != -1) {
+			WCHAR* wmess;
+			int nChars = MultiByteToWideChar(CP_ACP, 0, p->message, -1, NULL, 0);
+			wmess = new WCHAR[nChars];
+			MultiByteToWideChar(CP_ACP, 0, p->message, -1, (LPWSTR)wmess, nChars);
+			wcscpy_s(pPlayers[id].chat_buf, wmess);
+			pPlayers[id].timeout = high_resolution_clock::now() + 1s;
+		}
+		else { // 전채 채팅
+			WCHAR* wmess;
+			int nChars = MultiByteToWideChar(CP_ACP, 0, p->message, -1, NULL, 0);
+			wmess = new WCHAR[nChars];
+			MultiByteToWideChar(CP_ACP, 0, p->message, -1, (LPWSTR)wmess, nChars);
+			ALLCHAT allchat = {};
+			wcscpy_s(allchat.chat_buf, wmess);
+			allchat.timeout = high_resolution_clock::now() + 5s;
+			allchatList.push_back(allchat);
+		}
 	}
 	break;
 	case SC_PACKET_STAT_CHANGE:
@@ -359,16 +372,23 @@ void MainGame::Render()
 			TCHAR lpUI[MAX_STR_LEN];
 			wsprintfW(lpUI, TEXT("♥LEVEL : %d                 ♥HP : %d                 ♥EXP : %d          "),
 				players[myid].level, players[myid].hp, players[myid].exp);
-			TextOut(hdcMain, rc.left, rc.bottom, (wchar_t*)lpUI, lstrlen(lpUI));
+			TextOut(hdcBuffer, rc.left, rc.bottom, (wchar_t*)lpUI, lstrlen(lpUI));
 		}
 
 		// reder chat
 		{
-			TCHAR lpNickname[MAX_ID_LEN];	// 닉네임
-			size_t convertedChars = 0;
-			size_t newsize = strlen(obj.name) + 1;
-			mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
-			TextOut(hdcBuffer, rc.left + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+			int chatY = 20;
+			RECT cRect; cRect.left = WINCX - 600; cRect.right = WINCX; cRect.bottom = WINCY - 50; cRect.top = WINCY - 100;
+			int num = 0;
+			for (auto iter = allchatList.begin(); iter != allchatList.end();) {
+				TextOut(hdcBuffer, cRect.left, cRect.top + chatY * num, iter->chat_buf, lstrlen(iter->chat_buf));
+				num++;
+				if (iter->timeout < high_resolution_clock::now()) {
+					iter = allchatList.erase(iter);
+				}
+				else
+					++iter;
+			}
 		}
 	}
 	// 게임 오버 화면

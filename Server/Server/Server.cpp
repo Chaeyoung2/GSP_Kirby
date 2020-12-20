@@ -112,8 +112,8 @@ void ProcessRecv(int id, DWORD iosize);
 void ProcessMove(int id, char dir);
 void ProcessAttack(int id);
 
-void StatChange_MonsterDead(int id);
-void StatChange_MonsterCollide(int id);
+void StatChange_MonsterDead(int id, int mon_id);
+void StatChange_MonsterCollide(int id, int mon_id);
 
 void WorkerThread();
 void TimerThread();
@@ -453,7 +453,7 @@ void ProcessMove(int id, char dir)
 		for (auto ob : new_viewlist) {
 			if (false == IsNPC(ob)) continue;
 			if (IsCollide(id, ob)) {
-				StatChange_MonsterCollide(id);
+				StatChange_MonsterCollide(id, ob);
 			}
 		}
 	}
@@ -497,15 +497,22 @@ void ProcessAttack(int id) {
 			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
 				// 충돌
 				g_clients[i].hp -= PLAYER_ATTACKDAMAGE;
-				g_clients[i].attackme_id = id;
+				g_clients[i].attackme_id = id;		
+				char mess[MAX_STR_LEN];
+				sprintf_s(mess, "플레이어 %d이 몬스터 %d를 때려서 %d의 데미지를 입혔습니다.", id, i, PLAYER_ATTACKDAMAGE);
+				SendChatPacket(id, -1, mess); // 전챗
 			}
 		}
 	}
 
 }
 
-void StatChange_MonsterDead(int id) {
-	g_clients[id].exp += g_clients[id].level * g_clients[id].level * 2;
+void StatChange_MonsterDead(int id, int mon_id) {
+	int mon_type = g_clients[mon_id].m_type;
+	int exp = g_clients[id].level * g_clients[id].level * 2;
+	if (mon_type == 1 || mon_type == 2)
+		exp *= 2;
+	g_clients[id].exp += exp;
 	switch (g_clients[id].level) {
 	case 1:
 		if (g_clients[id].exp >= 100) {
@@ -532,20 +539,30 @@ void StatChange_MonsterDead(int id) {
 		}
 		break;
 	}
-	SendStatChangePacket(id);
+	SendStatChangePacket(id); // 상태 바뀜 패킷
+	cout << "몬스터 " << id << "(이)가" << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
+	char mess[MAX_STR_LEN];
+	sprintf_s(mess, "플레이어 %d가 몬스터 %d를 무찔러서 %d의 경험치를 얻었습니다.", id, mon_id, exp);
+	SendChatPacket(id, -1, mess); // 전챗 패킷
 }
 
-void StatChange_MonsterCollide(int id) {
-	g_clients[id].hp -= 30;
+void StatChange_MonsterCollide(int id, int mon_id) {
+	int damage = MONSTER_ATTACKDAMAGE;
+	g_clients[id].hp -= damage;
 	if (g_clients[id].hp < 0) { // 플레이어 사망 처리
 		g_clients[id].hp = MAX_PLAYERHP;
-		g_clients[id].exp /= 2; // 경험치 절반 깎임
+		g_clients[id].exp /= 2; // 경험치 절반 깎임S
 		SendLeavePacket(id, id);
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 7s;
 	}
-	else
+	else {
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 3s;
-	SendStatChangePacket(id);
+		cout << "몬스터 " << id << "(이)가" << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
+		char mess[MAX_STR_LEN];
+		sprintf_s(mess, "몬스터 %d의 공격으로 플레이어 %d이 %d의 데미지를 얻었습니다.", mon_id, id, damage);
+		SendChatPacket(id, -1, mess); // 전챗
+	}
+	SendStatChangePacket(id); // 상태 바뀜 패킷
 }
 
 void WorkerThread() {
@@ -1019,9 +1036,9 @@ void RandomMoveNPC(int id)
 		for (auto i : g_sector[sx][sy]) {
 			if (true == IsNPC(i)) continue;
 			if (true == IsObstacle(i)) continue;
-			StatChange_MonsterDead(g_clients[id].attackme_id);
+			StatChange_MonsterDead(g_clients[id].attackme_id, id);
 			SendLeavePacket(i, id); // player에게 npc가 leave 하게끔
-			cout << "몬스터 " << id << "(이)가" << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
+
 		}
 		return;
 	}
@@ -1166,7 +1183,7 @@ void RandomMoveNPC(int id)
 	// 이동 후 플레이어와 충돌하는지
 	for (auto pl : n_vl) {
 		if (IsCollide(pl, id)) {
-			StatChange_MonsterCollide(pl);
+			StatChange_MonsterCollide(pl, id);
 		}
 	}
 

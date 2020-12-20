@@ -15,7 +15,8 @@ constexpr int NUM_OBSTACLE = 1000;
 
 constexpr int MAX_MONSTERHP = 40;
 constexpr int MAX_PLAYERHP = 100;
-constexpr int PLAYER_ATTACKDAMAGE = 20;
+constexpr int PLAYER_ATTACKDAMAGE = 50;
+constexpr int MONSTER_ATTACKDAMAGE = 20;
 
 #pragma pack (push, 1)
 
@@ -26,7 +27,6 @@ constexpr char SC_PACKET_LEAVE		= 3;
 constexpr char SC_PACKET_CHAT		= 4;
 constexpr char SC_PACKET_LOGIN_FAIL	= 5;
 constexpr char SC_PACKET_STAT_CHANGE	= 6;
-constexpr char SC_PACKET_ALLCHAT = 7;
 
 constexpr char CS_LOGIN		= 0;
 constexpr char CS_MOVE		= 1;
