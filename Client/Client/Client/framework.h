@@ -54,6 +54,7 @@ constexpr int KEY_ATTACK = 4;
 
 // extern
 extern HWND g_hwnd;
+extern wchar_t g_nicknamebuf[MAX_ID_LEN];
 
 // struct
 typedef struct tagObject {

@@ -11,20 +11,21 @@ constexpr int VIEW_LIMIT = 7;				// 시야 반지름, 상대방과 사이에 6개의 타일이 있
 
 constexpr int NUM_NPC = 10000;
 
-constexpr int NUM_OBSTACLE = 1000;
-constexpr int NUM_ITEM = 10000;
+constexpr int NUM_OBSTACLE = 5000; // 장애물 개수
+constexpr int NUM_ITEM = 5000; // 아이템 개수
 
-constexpr int MAX_MONSTERHP = 40;
-constexpr int MAX_PLAYERHP = 100;
-constexpr int MONSTER_ATTACKDAMAGE = 10;
+constexpr int MAX_MONSTERHP = 40; // 몬스터 최대 체력
+constexpr int MAX_PLAYERHP = 100; // 플레이어 최대 체력
+constexpr int MONSTER_ATTACKDAMAGE = 10; // 플레이어 공격력
 
-constexpr int PLUS_ITEMHP = 50;
+constexpr int PLUS_ITEMHP = 50; // HP 아이템 소모 시 체력 증가되는 수
 
-constexpr int OTYPE_NPC_PEACE = 0;
-constexpr int OTYPE_NPC_ROAMING = 1;
-constexpr int OTYPE_NPC_AGRO = 2;
-constexpr int OTYPE_ITEM_HP = 3;
-constexpr int OTYPE_ITEM_BUF = 4;
+// 오브젝트 타입 정의
+constexpr int OTYPE_NPC_PEACE = 0; // peace 몬스터 
+constexpr int OTYPE_NPC_ROAMING = 1; // roaming 몬스터
+constexpr int OTYPE_NPC_AGRO = 2; // agro 몬스터
+constexpr int OTYPE_ITEM_HP = 3; // HP 아이템
+constexpr int OTYPE_ITEM_BUF = 4; // 버프 아이템
 
 #pragma pack (push, 1)
 
@@ -101,7 +102,6 @@ struct sc_packet_stat_change {
 	short level;
 	int   exp;
 };
-
 
 
 struct cs_packet_login {

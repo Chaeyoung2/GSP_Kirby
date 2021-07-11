@@ -8,6 +8,9 @@
 #include <atomic>
 #include <chrono>
 #include <queue>
+#include <windows.h>  
+#include <sqlext.h>  
+#include <string>
 #include "protocol.h"
 
 extern "C" {
@@ -22,6 +25,7 @@ using namespace chrono;
 
 constexpr int S_SIZE = 100;
 
+#pragma comment(lib,"odbc32.lib")
 #pragma comment(lib, "Ws2_32.lib")
 #pragma comment(lib, "MSWSock.lib")
 #pragma comment(lib, "lua54.lib")
@@ -38,18 +42,39 @@ constexpr char OP_PLAYER_MOVE_NOTIFY = 4;
 constexpr char OP_PLAYER_HP_PLUS = 5;
 constexpr char OP_PLAYER_BUF = 6;
 
+// ## overlapped io pointer 확장.
+// overlapped io 구조체 자체는 쓸 만한 정보가 없다.
+// 따라서 정보들을 더 추가할 필요가 있다.
+// - 뒤에 추가하면 iocp가 모르고 에러도 나지 않는다. (pointer만 왔다갔다)
+// 꼭 필요한 정보
+// - 현재 이 i/o가 send인지 recv인지
+// - i/o buffer의 위치 (send할 때 버퍼도 같이 생성)
 struct OVER_EX {
 	WSAOVERLAPPED wsa_over;
 	char op_mode;
 	WSABUF wsa_buf;
-	unsigned char iocp_buf[MAX_BUFFER];
+	unsigned char iocp_buf[MAX_BUFFER]; // iocp send/recv 버퍼
 	int object_id;
 };
+// ## 클라이언트 객체
+// 서버는 클라이언트 정보(id, 네트워크 접속 정보, 상태, 게임 정보)를 가진 객체 필요.
+// - 최대 동접과 같은 개수 필요
+// GetQueuedCompletionStatus를 받았을 때 클라이언트 객체를 찾을 수 있어야 한다.
+// - iocp에서 오고 가는 것을은 completion_key, overlapped i/o pointer, number of byte 뿐
+// - completion_key를 클라 객체의 포인터나 id나 index로 한다.
 struct client_info {
 	client_info() {}
 	client_info(int _id, short _x, short _y, SOCKET _sock, bool _connected) {
 		id = _id; x = _x; y = _y; sock = _sock; connected = _connected;
 	}
+	// ## overlapped 구조체
+	// 모든 send, recv는 overlapped 구조체가 필요하다.
+	// 하나의 구조체를 동시에 여러 호출에서 사용하는 것은 불가능
+	// 소켓 당 recv 호출은 무조건 한 개, send 호출은 동시에 여러개 가능
+	// - recv 호출용 overlapped 구조체 한 개를 계속 재사용하는 것이 바람직
+	// - send 버퍼도 같은 개수 필요
+	// - send 개수 제한이 없으므로 new/delete 사용
+	// - 성능을 위해서는 공유 pool을 만들어 관리
 	OVER_EX m_recv_over;
 	mutex c_lock;
 	int id = -1;
@@ -62,8 +87,8 @@ struct client_info {
 	SOCKET sock = -1;
 	atomic_bool connected = false;
 	atomic_bool is_active;
-	unsigned char* m_packet_start;
-	unsigned char* m_recv_start;
+	unsigned char* m_packet_start; // 패킷 시작 위치
+	unsigned char* m_recv_start; // recv 시작 위치
 	//mutex vl;
 	unordered_set<int> view_list;
 	int move_time;
@@ -84,9 +109,9 @@ struct event_type {
 		return (wakeup_time > _Left.wakeup_time);
 	}
 };
-mutex id_lock;//아이디를 넣어줄때 상호배제해줄 락킹
+mutex id_lock; //아이디를 넣어줄때 상호배제해줄 락킹
 client_info g_clients[MAX_USER+NUM_NPC+NUM_OBSTACLE+NUM_ITEM];
-HANDLE h_iocp;
+HANDLE h_iocp; // 별도의 커널 객체로 핸들을 받아서 사용한다.
 SOCKET g_listenSocket;
 OVER_EX g_accept_over; // accept용 overlapped 구조체
 priority_queue<event_type> timer_queue;
@@ -95,6 +120,11 @@ mutex sector_l;
 int PLAYER_ATTACKDAMAGE = 20;
 
 unordered_set<int> g_sector[S_SIZE][S_SIZE];
+
+SQLHENV henv;
+SQLHDBC hdbc;
+SQLHSTMT hstmt = 0;
+
 
 void error_display(const char* msg, int err_no);
 
@@ -149,18 +179,34 @@ int API_get_y(lua_State* L);
 int API_get_x(lua_State* L);
 int API_RandomMove(lua_State* L);
 
+
+void InitializeDB();
+void LoadDB(const string name, int id);
+void SaveDB(string name, int lv, int x, int y, int exp);
+void CloseDB();
+void DB_ERROR(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
+
 int main()
 {
 	for (auto& cl : g_clients) {
 		cl.connected = false;
 	}
 
+#ifdef _DEBUG
+	cout << "Initialize DB" << endl;
+#endif
+	InitializeDB();
+
 	wcout.imbue(std::locale("korean"));
 
 	WSADATA WSAdata;
 	WSAStartup(MAKEWORD(2, 0), &WSAdata);
+	// ## iocp - 준비.
+	// iocp 커널 객체 생성. iocp 객체를 생성하여 핸들을 받아 사용한다.
 	h_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
 	g_listenSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	// ## iocp 객체와 소켓 연결. (listen socket을 iocp에 등록)
+	// key 값은 unique하게 설정, 마지막 값 무시.
 	CreateIoCompletionPort(reinterpret_cast<HANDLE>(g_listenSocket), h_iocp, KEY_SERVER, 0); // iocp에 리슨 소켓 등록
 
 	SOCKADDR_IN serverAddress;
@@ -176,6 +222,7 @@ int main()
 	g_accept_over.op_mode = OP_MODE_ACCEPT;
 	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
 	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));
+
 	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
 
 	// NPC 정보 세팅
@@ -189,7 +236,8 @@ int main()
 
 	// timer thread 생성
 	thread timer_thread{ TimerThread };
-	// worker thread 생성
+	// ## worker thread 생성.
+	// 그러나 iocp는 쓰레드 없이도 동작 가능하긴 하다.
 	vector <thread> workerthreads;
 	for (int i = 0; i < 6; ++i) {
 		workerthreads.emplace_back(WorkerThread);
@@ -200,10 +248,13 @@ int main()
 
 	closesocket(g_listenSocket);
 	WSACleanup();
+
+	// SaveDB(L"Chae", g_clients[0].level, g_clients[0].x, g_clients[0].y, g_clients[0].exp);
+	CloseDB();
 	return 0;
 }
 
-
+// 패킷 처리 루틴
 void ProcessPacket(int id)
 {
 	char p_type = g_clients[id].m_packet_start[1]; // 패킷 타입
@@ -214,13 +265,11 @@ void ProcessPacket(int id)
 		g_clients[id].c_lock.lock();
 		strcpy_s(g_clients[id].name, p->name);
 		g_clients[id].c_lock.unlock();
-		//char cl_name[256] = "";
-		//strcpy_s(cl_name, g_clients[id].name);
-		//if (true == atomic_compare_exchange_strong(
-		//	reinterpret_cast<volatile atomic_int*>(g_clients[id].name),
-		//	reinterpret_cast<int*>(cl_name),
-		//	reinterpret_cast<atomic_char>(p->name) ) {
-		//}
+		char array[MAX_ID_LEN];
+		memcpy(array, p->name, sizeof(p->name));
+		//std::wstring wstr(array, &array[sizeof(p->name) + 1]);
+		string str(p->name);
+		LoadDB(str, id);
 		SendLoginOK(id);
 		// Players
 		for (int i = 0; i < MAX_USER; ++i) {
@@ -303,6 +352,13 @@ void ProcessPacket(int id)
 
 }
 
+// ## iocp 사용법 - recv
+// 1 소켓 : 1 recv 호출 이므로, 하나의 버퍼를 계속 사용할 수 있다.
+// 패킷들이 중간에 잘린 채로 도착할 수 있다.
+// - 모아 두었다가 다음에 온 데이터와 붙여 준다.
+// - 남은 데이터를 저장해 두는 버퍼 또는 ring buffer 필요
+// 여러 패킷이 한꺼번에 도착할 수 있다.
+// - 잘라서 처리
 void ProcessRecv(int id, DWORD iosize)
 {
 	// 패킷 조립.
@@ -386,6 +442,8 @@ void ProcessMove(int id, char dir)
 		g_sector[sx][sy].erase(id);
 		g_sector[cur_sx][cur_sy].insert(id);
 		sector_l.unlock();
+		sx = cur_x;
+		sy = cur_y;
 	}
 	////좌표가 장애물과 겹치진 않는지? -> 겹치면 여기서 move fail
 	bool isCollide = false;
@@ -502,6 +560,8 @@ void ProcessMove(int id, char dir)
 		OVER_EX* ex_over = new OVER_EX;
 		ex_over->object_id = id;
 		ex_over->op_mode = OP_PLAYER_MOVE_NOTIFY;
+		// ## 이벤트 추가 함수, 커널의 queue에 이벤트를 추가한다.
+		// 순서대로 커널 object, 전송된 데이터 양, 미리 정해 놓은 ID, overlapped 구조체
 		PostQueuedCompletionStatus(h_iocp, 1, npc, &ex_over->wsa_over);
 	}
 }
@@ -551,44 +611,108 @@ void ProcessAttack(int id) {
 
 void ProcessAttackS(int id) {
 	// 클라이언트 id가 공격 시도.
-	short x[9], y[9]; 
+	short x[26], y[26]; 
 	short id_x = g_clients[id].x, id_y = g_clients[id].y;
-	for (int dir = 0; dir < 9; ++dir) {
+	for (int dir = 0; dir < 25; ++dir) {
 		if (dir == 0) {
-			x[dir] = id_x - 1;
-			y[dir] = id_y - 1;
+			x[dir] = id_x;
+			y[dir] = id_y;
 		}
 		else if (dir == 1) {
 			x[dir] = id_x;
-			y[dir] = id_y - 1;
+			y[dir] = id_y - 3;
 		}
 		else if (dir == 2) {
-			x[dir] = id_x + 1;
-			y[dir] = id_y - 1;
+			x[dir] = id_x - 1;
+			y[dir] = id_y - 2;
 		}
 		else if (dir == 3) {
-			x[dir] = id_x - 1;
-			y[dir] = id_y;
+			x[dir] = id_x;
+			y[dir] = id_y - 2;
 		}
 		else if (dir == 4) {
-			x[dir] = id_x;
-			y[dir] = id_y;
+			x[dir] = id_x + 1;
+			y[dir] = id_y - 2;
 		}
 		else if (dir == 5) {
-			x[dir] = id_x + 1;
-			y[dir] = id_y ;
+			x[dir] = id_x - 2;
+			y[dir] = id_y - 1;
 		}
 		else if (dir == 6) {
 			x[dir] = id_x - 1;
-			y[dir] = id_y + 1;
+			y[dir] = id_y - 1;
 		}
 		else if (dir == 7) {
 			x[dir] = id_x;
-			y[dir] = id_y + 1;
+			y[dir] = id_y - 1;
 		}
 		else if (dir == 8) {
 			x[dir] = id_x + 1;
+			y[dir] = id_y - 1;
+		}
+		else if (dir == 9) {
+			x[dir] = id_x + 2;
+			y[dir] = id_y - 1;
+		}
+		else if (dir == 10) {
+			x[dir] = id_x - 3;
+			y[dir] = id_y ;
+		}
+		else if (dir == 11) {
+			x[dir] = id_x - 2;
+			y[dir] = id_y ;
+		}
+		else if (dir == 12) {
+			x[dir] = id_x - 1;
+			y[dir] = id_y ;
+		}
+		else if (dir == 13) {
+			x[dir] = id_x + 1;
+			y[dir] = id_y ;
+		}
+		else if (dir == 14) {
+			x[dir] = id_x + 2;
+			y[dir] = id_y ;
+		}
+		else if (dir == 15) {
+			x[dir] = id_x + 3;
+			y[dir] = id_y ;
+		}
+		else if (dir == 16) {
+			x[dir] = id_x - 2;
 			y[dir] = id_y + 1;
+		}
+		else if (dir == 17) {
+			x[dir] = id_x - 1;
+			y[dir] = id_y + 1;
+		}
+		else if (dir == 18) {
+			x[dir] = id_x;
+			y[dir] = id_y + 1;
+		}
+		else if (dir == 19) {
+			x[dir] = id_x +1;
+			y[dir] = id_y + 1;
+		}
+		else if (dir == 20) {
+			x[dir] = id_x + 2;
+			y[dir] = id_y + 1;
+		}
+		else if (dir == 21) {
+			x[dir] = id_x - 1;
+			y[dir] = id_y + 2;
+		}
+		else if (dir == 22) {
+			x[dir] = id_x;
+			y[dir] = id_y + 2;
+		}
+		else if (dir == 23) {
+			x[dir] = id_x + 1;
+			y[dir] = id_y + 2;
+		}
+		else if (dir == 24) {
+			x[dir] = id_x;
+			y[dir] = id_y + 3;
 		}
 	}
 
@@ -596,7 +720,7 @@ void ProcessAttackS(int id) {
 	// 플레이어 공격과 npc의 충돌 검사
 	for (auto i : vl) {
 		if (false == IsNPC(i)) continue;
-		for (int dir = 0; dir < 8; ++dir) {
+		for (int dir = 0; dir < 25; ++dir) {
 			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
 				if (false == IsInvincible(i)) {
 					// 충돌
@@ -744,7 +868,18 @@ void WorkerThread() {
 		ULONG_PTR iocp_key;
 		int key;
 		WSAOVERLAPPED* lpover;
+		// ## iocp 완료 처리.
+		// i/o 완료 상태를 report한다.
+		// - 에러 처리/접속 종료 처리
+		// - Send / Recv / Accept 처리
+		// -- 확장 overlapped i/o 구조체를 유용하게 사용
+		// -- recv : 패킷이 다 왔나 검사 후 다 왔으면 패킷 처리, 여러 패킷 한번에 처리, 계속 recv 호출
+		// -- send : overlapped 구조체와 버퍼 free
+		// -- accept : 새 클라이언트 객체 등록
+		// thread를 iocp의 thread pool에 등록하고 멈춤
+		// 인자: 커널 object, 전송된 데이터 양, 미리 정해놓은 id, overlapped io 구조체
 		int ret = GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
+		// 여기부터 lpover에 따른 처리
 		key = static_cast<int>(iocp_key);
 //#ifdef _DEBUG
 //		cout << "Completion Detected\n";
@@ -752,6 +887,7 @@ void WorkerThread() {
 		if (FALSE == ret) { // max user exceed 문제 방지. // 0이 나오면 진행하지 않는다.
 			int error_no = WSAGetLastError();
 			if (64 == error_no) { // 
+				SaveDB(g_clients[key].name, g_clients[key].level, g_clients[key].x, g_clients[key].y, g_clients[key].exp);
 				DisconnectClient(key);
 				continue;
 			}
@@ -768,6 +904,7 @@ void WorkerThread() {
 		case OP_MODE_RECV:
 		{
 			if (io_size == 0) { // 클라이언트 접속 종료
+				SaveDB(g_clients[key].name, g_clients[key].level, g_clients[key].x, g_clients[key].y, g_clients[key].exp);
 				DisconnectClient(key);
 			}
 			else { // 패킷 처리
@@ -780,6 +917,10 @@ void WorkerThread() {
 		break;
 		case OP_MODE_SEND:
 		{
+			// ## send 완료의 구현
+			// overlapped 구조체와 buffer를 해제시킨다.
+			// 메모리를 재사용한다.
+			// 모든 자료구조를 확장 overlapped 구조체에 넣었으므로!
 			delete over_ex;
 		}
 		break;
@@ -829,6 +970,9 @@ void TimerThread()
 					//AddTimer(ev.obj_id, OP_RANDOM_MOVE, system_clock::now() + 1s);
 					OVER_EX* ex_over = new OVER_EX;
 					ex_over->op_mode = OP_RANDOM_MOVE;
+					// ## PostQueuedCompletionStatus의 용도.
+					// iocp를 사용할 경우 iocp가 main loop가 되기 때문에,
+					// socket i/o 이외에도 모든 다른 작업할 내용을 추가할 때 쓰인다.
 					PostQueuedCompletionStatus(h_iocp, 1, ev.obj_id, &ex_over->wsa_over);
 				}
 				if (ev.event_id == OP_PLAYER_HP_PLUS) {
@@ -889,28 +1033,31 @@ void AddNewClient(SOCKET ns)
 		atomic_compare_exchange_strong(reinterpret_cast<atomic_uintptr_t*>(&g_clients[i].sock), &u_compare_val, ns);
 		atomic_compare_exchange_strong(reinterpret_cast<atomic_char*>(&(g_clients[i].name[0])), &c_compare_val, 0);
 
+		// ## overlapped io pointer 확장.
 		g_clients[i].m_packet_start = g_clients[i].m_recv_over.iocp_buf;
 		g_clients[i].m_recv_over.op_mode = OP_MODE_RECV;
 		g_clients[i].m_recv_over.wsa_buf.buf = reinterpret_cast<CHAR*>(g_clients[i].m_recv_over.iocp_buf); // 실제 버퍼의 주소 가리킴
 		g_clients[i].m_recv_over.wsa_buf.len = sizeof(g_clients[i].m_recv_over.iocp_buf);
 		ZeroMemory(&g_clients[i].m_recv_over.wsa_over, sizeof(g_clients[i].m_recv_over.wsa_over));
 		g_clients[i].m_recv_start = g_clients[i].m_recv_over.iocp_buf; // 이 위치에서 받기 시작한다.
-		g_clients[i].c_lock.lock();
-		int x = g_clients[i].x = rand() % WORLD_WIDTH;
-		int y = g_clients[i].y = rand() % WORLD_HEIGHT;
-		// 섹터
-		int sx = g_clients[i].sx = x / S_SIZE;
-		int sy = g_clients[i].sy = y / S_SIZE;
-		// 경험치, 레벨, hp
-		g_clients[i].hp = MAX_PLAYERHP;
-		g_clients[i].exp = 0;
-		g_clients[i].level = 1;
-		g_clients[i].c_lock.unlock();
-		// 섹터에 정보 넣기
-		sector_l.lock();
-		g_sector[sx][sy].insert(i);
-		sector_l.unlock();
-		// 소켓을 iocp에 등록
+		// db에서 불러오든가 할 거임.
+		//g_clients[i].c_lock.lock();
+		//int x = g_clients[i].x = rand() % WORLD_WIDTH;
+		//int y = g_clients[i].y = rand() % WORLD_HEIGHT;
+		//// 섹터
+		//int sx = g_clients[i].sx = x / S_SIZE;
+		//int sy = g_clients[i].sy = y / S_SIZE;
+		//// 경험치, 레벨, hp
+		//g_clients[i].hp = MAX_PLAYERHP;
+		//g_clients[i].exp = 0;
+		//g_clients[i].level = 1;
+		//g_clients[i].c_lock.unlock();
+		//// 섹터에 정보 넣기
+		//sector_l.lock();
+		//g_sector[sx][sy].insert(i);
+		//sector_l.unlock();
+
+		// ## 새로 접속한 소켓을 iocp에 등록(연결)
 		DWORD flags = 0;
 		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0); // 소켓을 iocp에 등록
 		// Recv
@@ -938,10 +1085,25 @@ void AddNewClient(SOCKET ns)
 		AddTimer(i, OP_PLAYER_HP_PLUS, system_clock::now() + 5s);
 	}
 	// 다시 accept
+	// ## Accept 처리.
+	// acceptEx로 비동기 처리 : listen socket을 iocp에 등록 후 acceptEX 호출
+	// 무한 루프를 돌면서
+	// - 새 클라이언트 접속 시 클라이언트 객체 만듦.
+	// - iocp에 소켓을 등록한다. (send recv가 iocp를 통해 수행됨)
+	// - WSARecv()를 호출한다. (overlapped io recv 상태를 항상 유지하여야 함)
+	// - acceptEX()를 다시 호출
+	// ## 멀티 플레이어 - 완료 처리
+	// 완료된 소켓으로 새 클라이언트 생성
+	// 새로운 socket을 생성
 	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	g_accept_over.op_mode = OP_MODE_ACCEPT;
 	g_accept_over.wsa_buf.len = static_cast<ULONG>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
 	ZeroMemory(&g_accept_over.wsa_over, sizeof(g_accept_over.wsa_over));// accept overlapped 구조체 사용 전 초기화
+	// ## 비동기 Accept
+	// 메인 루프가 GetQueuedCompletionStatus()로 대기해야 하므로.
+	// Accept 또한 IOCP로 수신한다. -> AcceptEx
+	// AcceptEx(서버 메인 소켓, 클라이언트 연결 소켓, 클라이언트 주소 저장 버퍼,
+	//					recv할 데이터 크기, 서버 주소 사이즈, 클라 주소 사이즈, overlapped 구조체)
 	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over);
 }
 
@@ -981,6 +1143,18 @@ void DisconnectClient(int id)
 
 }
 
+// ## iocp 사용법 - 버퍼 관리 - send
+// 1 socket : 여러 send 가능
+// - 다중 접속 BroadCasting
+// - overlapped 구조체, WSABUF는 중복 사용 불가
+// windows는 send 실행 순서대로 내부 버퍼에 넣고 전송
+// 내부 버퍼가 차서 send가 중간에 잘렸다면?
+// - 나머지를 다시 보냄
+// 다시 보내기 전 다른 쓰레드의 send가 끼어들었다면?
+// - 모아서 차례차례 보낸다. send 데이터 버퍼 외 패킷 저장 버퍼를 따로 둔다.
+// - 또는 이런 일이 벌어진 소켓을 끊어 버린다.
+
+
 void SendPacket(int id, void* p)
 {
 	unsigned char* packet = reinterpret_cast<unsigned char*>(p);
@@ -992,6 +1166,15 @@ void SendPacket(int id, void* p)
 	ZeroMemory(&send_over->wsa_over, sizeof(send_over->wsa_over));
 	//클라이언트의 소켓에 접근하므로 lock
 	g_clients[id].c_lock.lock();
+	// ## WSASend의 사용
+	// send는 여러 Thread에서 동시다발적으로 발생한다.
+	// send하는 overlapped 구조체와 buffer는 send가 끝날 때까지 유지되어야 한다.
+	// - 개수를 미리 알 수 없으므로 dynamic하게 관리
+	// 부분 send인 경우
+	// - 버퍼가 비워지지 않은 경우..
+	// - 에러 처리 하고 끊어 버린다.
+	// -- 현재 운영체제의 메모리가 꽉 찬 경우
+	// -- 이런 불상사를 막으려면 send하는 데이터 양을 조절한다.
 	if (true == g_clients[id].connected) // use 중이므로 sock이 살아있다
 		WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
 	g_clients[id].c_lock.unlock();
@@ -1014,10 +1197,10 @@ void SendLeavePacket(int to_id, int id)
 void SendLoginOK(int id)
 {
 	sc_packet_login_ok p;
-	p.exp = 0;
+	p.exp = g_clients[id].exp;
 	p.hp = MAX_PLAYERHP;
 	p.id = id;
-	p.level = 1;
+	p.level = g_clients[id].level;
 	p.size = sizeof(p);
 	p.type = SC_PACKET_LOGIN_OK;
 	p.x = g_clients[id].x;
@@ -1036,7 +1219,7 @@ void SendEnterPacket(int to_id, int new_id)
 	//g_clients[new_id].c_lock.lock();
 	strcpy_s(p.name, g_clients[new_id].name);
 	//g_clients[new_id].c_lock.unlock();
-	p.o_type = g_clients[new_id].m_type;
+	p.o_type = static_cast<char>(g_clients[new_id].m_type);
 	SendPacket(to_id, &p);
 }
 
@@ -1078,7 +1261,7 @@ void SendStatChangePacket(int id) {
 int calcDist(int p1, int p2) {
 	int dist = (g_clients[p1].x - g_clients[p2].x) * (g_clients[p1].x - g_clients[p2].x);
 	dist += (g_clients[p1].y - g_clients[p2].y) * (g_clients[p1].y - g_clients[p2].y);
-	return sqrt(dist);
+	return (int)(sqrt(dist));
 }
 
 int calcDistX(int p1, int p2) {
@@ -1221,6 +1404,7 @@ void InitializeItem() {
 
 	cout << "Initializing Items finishied.\n";
 }
+
 
 void RandomMoveNPC(int id)
 {
@@ -1446,7 +1630,7 @@ void AddTimer(int obj_id, int ev_type, system_clock::time_point t) {
 
 void PlayerHPPlus(int id) {
 	if (g_clients[id].hp < MAX_PLAYERHP) {
-		g_clients[id].hp += (MAX_PLAYERHP * 0.1f);
+		g_clients[id].hp += int((float)MAX_PLAYERHP * 0.1f);
 		SendStatChangePacket(id);
 	}
 	// 다시 
@@ -1492,3 +1676,162 @@ int API_RandomMove(lua_State* L) {
 	return 0;
 }
 
+void InitializeDB()
+{
+	// Allocate environment handle  
+	SQLRETURN retcode = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv);
+
+	// Set the ODBC version environment attribute  
+	if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
+		retcode = SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (SQLPOINTER*)SQL_OV_ODBC3, 0);
+
+		// Allocate connection handle  
+		if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
+			retcode = SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
+
+			// Set login timeout to 5 seconds  
+			if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
+				SQLSetConnectAttr(hdbc, SQL_LOGIN_TIMEOUT, (SQLPOINTER)5, 0);
+
+				// Connect to data source  
+				retcode = SQLConnect(hdbc, (SQLWCHAR*)L"2020_gsp_kirby", SQL_NTS, (SQLWCHAR*)NULL, 0, NULL, 0);
+
+				//// Allocate statement handle  
+				//if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
+				//   retcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
+
+				//   
+				//   retcode = SQLExecDirect(hstmt, (SQLWCHAR*)L"Exec Save_user chaechae,100,1000, 800", SQL_NTS);
+				//   if (retcode == SQL_ERROR || retcode == SQL_SUCCESS_WITH_INFO)DB_ERROR(hstmt, SQL_HANDLE_STMT, retcode);
+				//    Process data  
+				//   if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
+				//      SQLCancel(hstmt);
+				//      SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+				//   }
+				//}
+
+				cout << "DB 접속 완료" << endl;
+			}
+		}
+
+	}
+
+}
+
+void LoadDB(const string name, int id) {
+   //요청한 id로 로그인실패 패킷 보내주기
+   wstring w_name;
+   w_name.assign(name.begin(), name.end());
+	SQLHSTMT hstmt = 0;
+	SQLRETURN retcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
+	retcode = SQLExecDirect(hstmt, (SQLWCHAR*)((L"SELECT USER_ID, USER_LEVEL, USER_X, USER_Y, USER_EXP FROM Table_User WHERE USER_ID = '" + w_name + L"'").c_str()), SQL_NTS);
+
+
+	SQLINTEGER LEVEL=0, X=0, Y=0, EXP=0; 
+	SQLWCHAR USERID[10]=L"";
+	SQLLEN cbNAME = 0, cbLEVEL = 0, cbX = 0, cbY = 0, cbEXP = 0;
+
+
+	if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
+
+		// Bind columns 1, 2, and 3  
+		retcode = SQLBindCol(hstmt, 1, SQL_C_WCHAR, USERID, 10, &cbNAME);
+		retcode = SQLBindCol(hstmt, 2, SQL_C_LONG, &LEVEL, 100, &cbLEVEL);
+		retcode = SQLBindCol(hstmt, 3, SQL_C_LONG, &X, 100, &cbX);
+		retcode = SQLBindCol(hstmt, 4, SQL_C_LONG, &Y, 100, &cbY);
+		retcode = SQLBindCol(hstmt, 5, SQL_C_LONG, &EXP, 100, &cbEXP);
+		// Fetch and print each row of data. On an error, display a message and exit.  
+
+		retcode = SQLFetch(hstmt);
+
+		if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO)
+		{
+			cout << "DB에서 일치하는 ID 정보를 불러옵니다." << name << endl;
+			std::wstring str = USERID;
+			g_clients[id].c_lock.lock();
+			copy(str.begin(), str.end(), g_clients[id].name);
+			g_clients[id].level = LEVEL;
+			g_clients[id].exp = EXP;
+			g_clients[id].x = X;
+			g_clients[id].y = Y;			
+			// 섹터
+			int sx = g_clients[id].sx = X / S_SIZE;
+			int sy = g_clients[id].sy = Y / S_SIZE;
+			sector_l.lock();
+			g_sector[sx][sy].insert(id);
+			sector_l.unlock();
+			g_clients[id].hp = 100;
+			g_clients[id].c_lock.unlock();
+		}
+		else {
+
+			cout << "DB에 일치하는 ID가 없습니다." << name << endl;
+			//찾는이름이없다. 새로운 아이디를 만들어 저장!
+			g_clients[id].c_lock.lock();
+			copy(name.begin(), name.end(), g_clients[id].name);
+			int x = g_clients[id].x = rand() % WORLD_WIDTH;
+			int y = g_clients[id].y = rand() % WORLD_HEIGHT;
+			// 섹터
+			int sx = g_clients[id].sx = x / S_SIZE;
+			int sy = g_clients[id].sy = y / S_SIZE;
+
+			// 경험치, 레벨, hp
+			g_clients[id].hp = MAX_PLAYERHP;
+			g_clients[id].exp = 0;
+			g_clients[id].level = 1;
+			g_clients[id].c_lock.unlock();
+			// 섹터에 정보 넣기
+			sector_l.lock();
+			g_sector[sx][sy].insert(id);
+			sector_l.unlock();
+
+			DB_ERROR(hstmt, SQL_HANDLE_STMT, retcode);
+		}
+		SQLFreeStmt(hstmt, SQL_DROP);
+	}
+	
+
+}
+
+void SaveDB(string name, int lv, int x, int y, int exp) {
+	wstring w_name;
+	w_name.assign(name.begin(), name.end());
+	SQLHSTMT hstmt = 0;
+	SQLRETURN retcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
+	retcode = SQLExecDirect(hstmt, (SQLWCHAR*)(L"Exec saveDB " +
+		w_name + L","
+		+ std::to_wstring(lv) + L","
+		+ std::to_wstring(x) + L","
+		+ std::to_wstring(y) + L","
+		+ std::to_wstring(exp)).c_str(), SQL_NTS);
+
+	if (retcode == SQL_ERROR || retcode == SQL_SUCCESS_WITH_INFO)DB_ERROR(hstmt, SQL_HANDLE_STMT, retcode);
+	SQLFreeStmt(hstmt, SQL_DROP);
+	cout << "SaveDB " << name << endl;
+}
+
+void CloseDB() {
+	SQLDisconnect(hdbc);
+	SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
+	SQLFreeHandle(SQL_HANDLE_ENV, henv);
+}
+
+void DB_ERROR(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode)
+{
+	SQLSMALLINT iRec = 0;
+	SQLINTEGER iError;
+	WCHAR wszMessage[1000];
+	WCHAR wszState[SQL_SQLSTATE_SIZE + 1];
+	if (RetCode == SQL_INVALID_HANDLE) {
+		//fwprintf(stderr, L"Invalid handle!\n");
+		wcout << L"invalid handle" << endl;
+		return;
+	}
+	while (SQLGetDiagRec(hType, hHandle, ++iRec, wszState, &iError, wszMessage,
+		(SQLSMALLINT)(sizeof(wszMessage) / sizeof(WCHAR)), (SQLSMALLINT*)NULL) == SQL_SUCCESS) {
+		// Hide data truncated..
+		if (wcsncmp(wszState, L"01004", 5)) {
+			wcout << L"[" << wszState << L"]" << wszMessage << "(" << iError << ")" << endl;
+		}
+	}
+}

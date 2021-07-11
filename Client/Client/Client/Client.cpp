@@ -12,9 +12,11 @@ HINSTANCE hInst;                                // 현재 인스턴스입니다.
 WCHAR szTitle[MAX_LOADSTRING];                  // 제목 표시줄 텍스트입니다.
 WCHAR szWindowClass[MAX_LOADSTRING];            // 기본 창 클래스 이름입니다.
 MainGame mainGame;
+bool isGameStart = false;
 
 // extern
 HWND g_hwnd;
+wchar_t		g_nicknamebuf[MAX_ID_LEN];	// 닉네임 입력
 
 // 이 코드 모듈에 포함된 함수의 선언을 전달합니다:
 ATOM                MyRegisterClass(HINSTANCE hInstance);
@@ -77,7 +79,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     DWORD dwFPSCurTime = 0;
     int   iFps = 0;
 
-    while (WM_QUIT != msg.message)
+    while (WM_QUIT != msg.message )
     {
         dwFPSCurTime = GetTickCount();
 
@@ -103,8 +105,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             if (dwOldTime + 10 < dwCurTime)
             {
                 dwOldTime = dwCurTime;
-                mainGame.Update();
-                mainGame.Render();
+                    mainGame.Update();
+                    mainGame.Render();
+
                 iFps++;
             }
         }
@@ -157,7 +160,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
    // 타이틀바가 윈도우 잘라먹음
    int titleBarHeight = GetSystemMetrics(SM_CYCAPTION);
-   RECT rc{ 0,0,WINCX + titleBarHeight, WINCY + titleBarHeight * 2 + 30 };
+   RECT rc{ 0,0,WINCX + titleBarHeight * 0.5f, WINCY + titleBarHeight * 1.5f };
 
    HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
       100, 100, rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hInstance, nullptr);
@@ -190,53 +193,78 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     static char str[1024];
+    static int count_id{ 0 };
     switch (message)
     {
     case WM_DESTROY:
+        mainGame.threading = false;
+        mainGame.recvThread.join();
         PostQuitMessage(0);
         break;
     case WM_CHAR: 
     {
-        int len = strlen(str);
-        str[len] = (TCHAR)wParam;
-        str[len + 1] = 0;
-        if (wParam == 'a' || wParam == 'A') {
-            mainGame.InputKeyState(4); // attack
-        } else if (wParam == 's' || wParam == 'S') {
-            mainGame.InputKeyState(10); // attack
-        }
-        else if (wParam == '1') {
+        if (true == mainGame.getGameStart()) {
+            int len = strlen(str);
+            str[len] = (TCHAR)wParam;
+            str[len + 1] = 0;
+            if (wParam == 'a' || wParam == 'A') {
+                mainGame.InputKeyState(4); // attack
+            }
+            else if (wParam == 's' || wParam == 'S') {
+                mainGame.InputKeyState(10); // attack
+            }
+            else if (wParam == '1') {
                 mainGame.InputKeyState(5); // 1번 아이템 소비
             }
-        else if (wParam == '2') {
-            mainGame.InputKeyState(6); // 2번 아이템 소비
+            else if (wParam == '2') {
+                mainGame.InputKeyState(6); // 2번 아이템 소비
+            }
+            else if (wParam == '3') {
+                mainGame.InputKeyState(7); //  3번 아이템 소비
+            }
+            else if (wParam == '4') {
+                mainGame.InputKeyState(8); //  4번 아이템 소비
+            }
+            else if (wParam == '5') {
+                mainGame.InputKeyState(9); //  5번 아이템 소비
+            }
         }
-        else if (wParam == '3') {
-            mainGame.InputKeyState(7); //  3번 아이템 소비
-        }
-        else if (wParam == '4') {
-            mainGame.InputKeyState(8); //  4번 아이템 소비
-        }
-        else if (wParam == '5') {
-            mainGame.InputKeyState(9); //  5번 아이템 소비
+        else {
+            if (count_id < MAX_ID_LEN) {
+                g_nicknamebuf[count_id++] = wParam;
+                g_nicknamebuf[count_id] = '\0';
+            }
         }
     }
     break;
     case WM_KEYDOWN:
     {
-        switch (wParam) {
-        case VK_UP:
-            mainGame.InputKeyState(0);
-            break;
-        case VK_DOWN:
-            mainGame.InputKeyState(1);
-            break;
-        case VK_LEFT:
-            mainGame.InputKeyState(2);
-            break;
-        case VK_RIGHT:
-            mainGame.InputKeyState(3);
-            break;
+        if (true == mainGame.getGameStart()) {
+            switch (wParam) {
+            case VK_UP:
+                mainGame.InputKeyState(0);
+                break;
+            case VK_DOWN:
+                mainGame.InputKeyState(1);
+                break;
+            case VK_LEFT:
+                mainGame.InputKeyState(2);
+                break;
+            case VK_RIGHT:
+                mainGame.InputKeyState(3);
+                break;
+            case VK_ESCAPE:
+                DestroyWindow(g_hwnd);
+                break;
+            }
+        }
+        else {
+            switch (wParam) {
+            case VK_RETURN: // 아이디 입력 완료
+                mainGame.InitNetwork();
+                mainGame.setGameStart(true);
+                break;
+            }
         }
     }
         break;

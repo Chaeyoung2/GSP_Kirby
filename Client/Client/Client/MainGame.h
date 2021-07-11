@@ -29,7 +29,7 @@ public:
 	}
 private:
 	HDC hdc;
-	HBITMAP bitmaps[12];
+	HBITMAP bitmaps[13];
 private:
 	wchar_t mynickname[128] = L"";
 	OBJ players[MAX_USER+NUM_NPC+NUM_OBSTACLE+NUM_ITEM] = {};
@@ -38,7 +38,16 @@ private:
 public:
 	void InitNetwork();
 	void SendPacket(void* packet);
-private:
+	bool getGameStart() {
+		return gamestart;
+	}
+	void setGameStart(bool b) {
+		gamestart = b;
+	}
+public:
 	thread recvThread;
+	bool threading = true;
+private:
+	bool gamestart = false;
 };
 

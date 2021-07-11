@@ -19,6 +19,8 @@ int		saved_packet_size = 0;
 DWORD send_last_time = 0; // 마지막으로 send하고 얼마나 지났는지
 list<ALLCHAT> allchatList;
 
+char userID_buffer[MAX_ID_LEN]= "";
+
 void ProcessPacket(char* ptr, MainGame* maingame)
 {
 	int packet_size = ptr[0];
@@ -46,12 +48,13 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		maingame->setObjectPoint(packet_id, (float)ptX, (float)ptY);
 		//maingame->setObjectRect(packet_id);
 		// 로그인 ok 사인 받으면
-		int t_id = GetCurrentProcessId();
-		char tempBuffer[MAX_ID_LEN] = "";
-		sprintf_s(tempBuffer, "P%03d", t_id % 1000);
+		//int t_id = GetCurrentProcessId();
+		//char tempBuffer[MAX_ID_LEN] = "";
+		//sprintf_s(tempBuffer, "P%03d", t_id % 1000);
 		pPlayers[packet_id].name = new char[MAX_ID_LEN];
 		ZeroMemory(pPlayers[packet_id].name, MAX_ID_LEN);
-		memcpy(pPlayers[packet_id].name, tempBuffer, strlen(tempBuffer));
+		//memcpy(pPlayers[packet_id].name, tempBuffer, strlen(tempBuffer));
+		sprintf(pPlayers[packet_id].name, "%ws", g_nicknamebuf);
 		pl.unlock();
 		// 좌표에 따라 스크롤 설정
 		maingame->setScroll(ptX, ptY);
@@ -160,7 +163,7 @@ void RecvPacket(LPVOID classPtr) {
 	DWORD num_recv;
 	DWORD flag = 0;
 
-	while (true) {
+	while (maingame->threading) {
 		int ret = WSARecv(serverSocket, &recv_wsabuf, 1, &num_recv, &flag, NULL, NULL);
 		if (ret) {
 			int err_code = WSAGetLastError();
@@ -206,7 +209,7 @@ void MainGame::Start()
 	setObjectPoint(0, 0, 0);
 	//setObjectRect(0);
 
-	InitNetwork();
+	//InitNetwork();
 
 }
 
@@ -241,6 +244,7 @@ void MainGame::Render()
 	HDC hdcGameover = CreateCompatibleDC(hdcMain);
 	HDC hdcAgro = CreateCompatibleDC(hdcMain);
 	HDC hdcPeace = CreateCompatibleDC(hdcMain);
+	HDC hdcMenu = CreateCompatibleDC(hdcMain);
 
 	SelectObject(hdcBuffer, bitmaps[0]);
 	SelectObject(hdcBackGround, bitmaps[1]);
@@ -254,203 +258,213 @@ void MainGame::Render()
 	SelectObject(hdcGameover, bitmaps[6]);
 	SelectObject(hdcAgro, bitmaps[7]);
 	SelectObject(hdcPeace, bitmaps[8]);
+	SelectObject(hdcMenu, bitmaps[12]);
 
 	int playerptX = 0, playerptY = 0;
 	// render BackGround at BackBuffer
 	BitBlt(hdcBuffer, 0, 0, WINCX, WINCY, hdcBackGround, 0, 0, SRCCOPY);
-	if (gameover == false) {
-		// render Line
-		for (int i = 0; i < TILESCREENMAX + 1; i++) {
-			MoveToEx(hdcBuffer, TILESIZE * (i), 0, NULL);
-			LineTo(hdcBuffer, TILESIZE * (i), TILESIZE * (TILESCREENMAX));
-			MoveToEx(hdcBuffer, 0, TILESIZE * (i), NULL);
-			LineTo(hdcBuffer, TILESIZE * (TILESCREENMAX), TILESIZE * (i));
-		}
-		// render Bullets
-		{
-			for (auto iter = bulletList.begin(); iter != bulletList.end();) {
-				float x = (iter->x) * TILESIZE + TILESIZE * 0.5f;
-				float y = (iter->y) * TILESIZE + TILESIZE * 0.5f;
+	if (gamestart == false) {
+		BitBlt(hdcBuffer, 0, 0, WINCX, WINCY, hdcMenu, 0, 0, SRCCOPY);
+		// 입력 id 출력.
+		RECT rc = { 80, WINCY - 130, 180, WINCY - 100 };
+		DrawText(hdcBuffer, g_nicknamebuf, wcslen(g_nicknamebuf), &rc, DT_SINGLELINE);
+	}
+	else {
+		if (gameover == false) {
+			// render Line
+			for (int i = 0; i < TILESCREENMAX + 1; i++) {
+				MoveToEx(hdcBuffer, TILESIZE * (i), 0, NULL);
+				LineTo(hdcBuffer, TILESIZE * (i), TILESIZE * (TILESCREENMAX));
+				MoveToEx(hdcBuffer, 0, TILESIZE * (i), NULL);
+				LineTo(hdcBuffer, TILESIZE * (TILESCREENMAX), TILESIZE * (i));
+			}
+			// render Bullets
+			{
+				for (auto iter = bulletList.begin(); iter != bulletList.end();) {
+					float x = (iter->x) * TILESIZE + TILESIZE * 0.5f;
+					float y = (iter->y) * TILESIZE + TILESIZE * 0.5f;
+					RECT rc;
+					if (iter->type == 0) {
+						rc.left = long(x - 30 * 0.5f);
+						rc.right = long(x + 30 * 0.5f);
+						rc.top = long(y - 30 * 0.5f);
+						rc.bottom = long(y + 30 * 0.5f);
+						TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, 30, 30, hdcBullet, 0, 0, 30, 30, RGB(0, 255, 255));
+					}
+					else {
+						rc.left = long(x - 240 * 0.5f);
+						rc.right = long(x + 240 * 0.5f);
+						rc.top = long(y - 240 * 0.5f);
+						rc.bottom = long(y + 240 * 0.5f);
+						TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, 240, 240, hdcBulletS, 0, 0, 30, 30, RGB(0, 255, 255));
+					}
+					if (++(iter->cur_time) > iter->timeout) {
+						iter = bulletList.erase(iter);
+					}
+					else
+						++iter;
+				}
+			}
+			// render Items
+			for (int i = MAX_USER + NUM_NPC + NUM_OBSTACLE; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
+				if (players[i].connected == false) continue;
+				OBJ obj = players[i];
+				short x = players[i].ptX * TILESIZE + TILESIZE * 0.5f;
+				short y = players[i].ptY * TILESIZE + TILESIZE * 0.5f;
 				RECT rc;
-				if (iter->type == 0) {
-					rc.left = long(x - 30 * 0.5f);
-					rc.right = long(x + 30 * 0.5f);
-					rc.top = long(y - 30 * 0.5f);
-					rc.bottom = long(y + 30 * 0.5f);
-					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, 30, 30, hdcBullet, 0, 0, 30, 30, RGB(0, 255, 255));
+				rc.left = long(x - PLAYERCX * 0.5f);
+				rc.right = long(x + PLAYERCX * 0.5f);
+				rc.top = long(y - PLAYERCY * 0.5f);
+				rc.bottom = long(y + PLAYERCY * 0.5f);
+				if (players[i].m_type == OTYPE_ITEM_HP) {
+					TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
+						rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
+						30, 30, /// 출력할 이미지의 너비, 높이
+						hdcHPPortion, /// 이미지 핸들
+						0, 0, /// 가져올 이미지의 시작지점 x,y 
+						30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
+						RGB(0, 255, 255) /// 투명하게 할 색상
+					);
 				}
 				else {
-					rc.left = long(x - 90 * 0.5f);
-					rc.right = long(x + 90 * 0.5f);
-					rc.top = long(y - 90 * 0.5f);
-					rc.bottom = long(y + 90 * 0.5f);
-					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, 90, 90, hdcBulletS, 0, 0, 30, 30, RGB(0, 255, 255));
-				}
-				if (++(iter->cur_time) > iter->timeout) {
-					iter = bulletList.erase(iter);
-				}
-				else
-					++iter;
-			}
-		}
-		// render Items
-		for (int i = MAX_USER + NUM_NPC + NUM_OBSTACLE; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
-			if (players[i].connected == false) continue;
-			OBJ obj = players[i];
-			short x = players[i].ptX * TILESIZE + TILESIZE * 0.5f;
-			short y = players[i].ptY * TILESIZE + TILESIZE * 0.5f;
-			RECT rc;
-			rc.left = long(x - PLAYERCX * 0.5f);
-			rc.right = long(x + PLAYERCX * 0.5f);
-			rc.top = long(y - PLAYERCY * 0.5f);
-			rc.bottom = long(y + PLAYERCY * 0.5f);
-			if (players[i].m_type == OTYPE_ITEM_HP) {
-				TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-					rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
-					30, 30, /// 출력할 이미지의 너비, 높이
-					hdcHPPortion, /// 이미지 핸들
-					0, 0, /// 가져올 이미지의 시작지점 x,y 
-					30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
-					RGB(0, 255, 255) /// 투명하게 할 색상
-				);
-			}
-			else {
-				TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-					rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
-					30, 30, /// 출력할 이미지의 너비, 높이
-					hdcBUFPortion, /// 이미지 핸들
-					0, 0, /// 가져올 이미지의 시작지점 x,y 
-					30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
-					RGB(0, 255, 255) /// 투명하게 할 색상
-				);
-			}
-		}
-		// render Players
-		for (int i = 0; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
-			if (players[i].connected == false) continue;
-			OBJ obj = players[i];
-			short x = players[i].ptX * TILESIZE + TILESIZE * 0.5f;
-			short y = players[i].ptY * TILESIZE + TILESIZE * 0.5f;
-			RECT rc;
-			rc.left = long(x - PLAYERCX * 0.5f);
-			rc.right = long(x + PLAYERCX * 0.5f);
-			rc.top = long(y - PLAYERCY * 0.5f);
-			rc.bottom = long(y + PLAYERCY * 0.5f);
-			if (i < MAX_USER) { // Player
-				TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, PLAYERCX, PLAYERCY, hdcPlayer, 0, 0, 30, 30, RGB(0, 255, 255));
-				// render Text(info)
-				if (i == myid) {
-					// 내 캐릭터 구분
-					//TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y + 3 + scrollY, L"It's me!", lstrlen(L"It's me"));
-					playerptX = obj.ptX; playerptY = obj.ptY; // 배열 계속 읽는거 방지
-				}
-				// 정보 출력
-				//TCHAR lpOut[128]; // 좌표
-				//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
-				//TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
-				if (players[i].name != nullptr) {
-					TCHAR lpNickname[MAX_ID_LEN];	// 닉네임
-					size_t convertedChars = 0;
-					size_t newsize = strlen(obj.name) + 1;
-					mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
-					TextOut(hdcBuffer, rc.left + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+					TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
+						rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
+						30, 30, /// 출력할 이미지의 너비, 높이
+						hdcBUFPortion, /// 이미지 핸들
+						0, 0, /// 가져올 이미지의 시작지점 x,y 
+						30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
+						RGB(0, 255, 255) /// 투명하게 할 색상
+					);
 				}
 			}
-			else if (MAX_USER <= i && i < MAX_USER + NUM_NPC) { // NPC
-				switch (players[i].m_type) {
-				case 0:
-					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcPeace, 0, 0, 50, 50, RGB(0, 255, 255));
-					break;
-				case 1:
-					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcNPC, 0, 0, 20, 30, RGB(0, 255, 255));
-					break;
-				case 2:
-					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcAgro, 0, 0, 30, 30, RGB(0, 255, 255));
-					break;
+			// render Players
+			for (int i = 0; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
+				if (players[i].connected == false) continue;
+				OBJ obj = players[i];
+				short x = players[i].ptX * TILESIZE + TILESIZE * 0.5f;
+				short y = players[i].ptY * TILESIZE + TILESIZE * 0.5f;
+				RECT rc;
+				rc.left = long(x - PLAYERCX * 0.5f);
+				rc.right = long(x + PLAYERCX * 0.5f);
+				rc.top = long(y - PLAYERCY * 0.5f);
+				rc.bottom = long(y + PLAYERCY * 0.5f);
+				if (i < MAX_USER) { // Player
+					TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, PLAYERCX, PLAYERCY, hdcPlayer, 0, 0, 30, 30, RGB(0, 255, 255));
+					// render Text(info)
+					if (i == myid) {
+						// 내 캐릭터 구분
+						//TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y + 3 + scrollY, L"It's me!", lstrlen(L"It's me"));
+						playerptX = obj.ptX; playerptY = obj.ptY; // 배열 계속 읽는거 방지
+					}
+					// 정보 출력
+					//TCHAR lpOut[128]; // 좌표
+					//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
+					//TextOut(hdcBuffer, players[i].rect.left + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
+					if (players[i].name != nullptr) {
+						TCHAR lpNickname[MAX_ID_LEN];	// 닉네임
+						size_t convertedChars = 0;
+						size_t newsize = strlen(obj.name) + 1;
+						mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
+						TextOut(hdcBuffer, rc.left + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+					}
 				}
-				// 좌표 정보 출력
-				//TCHAR lpOut[128]; 
-				//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
-				//TextOut(hdcBuffer, players[i].rect.left + 10 + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
-				if (obj.name != nullptr) {
-					TCHAR lpNickname[MAX_ID_LEN];	// 닉네임
-					size_t convertedChars = 0;
-					size_t newsize = strlen(obj.name) + 1;
-					mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
-					TextOut(hdcBuffer, rc.left + 5 + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+				else if (MAX_USER <= i && i < MAX_USER + NUM_NPC) { // NPC
+					switch (players[i].m_type) {
+					case 0:
+						TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcPeace, 0, 0, 50, 50, RGB(0, 255, 255));
+						break;
+					case 1:
+						TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcNPC, 0, 0, 20, 30, RGB(0, 255, 255));
+						break;
+					case 2:
+						TransparentBlt(hdcBuffer, rc.left + scrollX, rc.top + scrollY, MON1CX, MON1CY, hdcAgro, 0, 0, 30, 30, RGB(0, 255, 255));
+						break;
+					}
+					// 좌표 정보 출력
+					//TCHAR lpOut[128]; 
+					//wsprintf(lpOut, TEXT("(%d, %d)"), (int)(players[i].ptX), (int)(players[i].ptY));
+					//TextOut(hdcBuffer, players[i].rect.left + 10 + scrollX, players[i].y - 40 + scrollY, lpOut, lstrlen(lpOut));
+					if (obj.name != nullptr) {
+						TCHAR lpNickname[MAX_ID_LEN];	// 닉네임
+						size_t convertedChars = 0;
+						size_t newsize = strlen(obj.name) + 1;
+						mbstowcs_s(&convertedChars, lpNickname, newsize, obj.name, _TRUNCATE);
+						TextOut(hdcBuffer, rc.left + 5 + scrollX, y - 25 + scrollY, (wchar_t*)lpNickname, lstrlen(lpNickname));
+					}
+				}
+				else if (MAX_USER + NUM_NPC <= i && i < MAX_USER + NUM_NPC + NUM_OBSTACLE) {
+					TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
+						rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
+						30, 30, /// 출력할 이미지의 너비, 높이
+						hdcObstacle, /// 이미지 핸들
+						0, 0, /// 가져올 이미지의 시작지점 x,y 
+						30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
+						RGB(0, 255, 255) /// 투명하게 할 색상
+					);
+				}
+
+				// chat message
+				if (high_resolution_clock::now() < obj.timeout) {
+					TextOut(hdcBuffer, rc.left + scrollX, y + scrollY, obj.chat_buf, lstrlen(obj.chat_buf));
 				}
 			}
-			else if( MAX_USER+NUM_NPC <= i && i < MAX_USER+NUM_NPC+NUM_OBSTACLE) {
-				TransparentBlt(hdcBuffer, /// 이미지 출력할 위치 핸들
-					rc.left + scrollX, rc.top + scrollY, /// 이미지를 출력할 위치 x,y
-					30, 30, /// 출력할 이미지의 너비, 높이
-					hdcObstacle, /// 이미지 핸들
-					0, 0, /// 가져올 이미지의 시작지점 x,y 
-					30, 30, /// 원본 이미지로부터 잘라낼 이미지의 너비,높이
-					RGB(0, 255, 255) /// 투명하게 할 색상
-				);
-			}
-			
-			// chat message
-			if (high_resolution_clock::now() < obj.timeout) {
-				TextOut(hdcBuffer, rc.left + scrollX, y + scrollY, obj.chat_buf, lstrlen(obj.chat_buf));
-			}
-		}
-		// render Coordinates
-		int pointsCount = WORLD_WIDTH / 8; // 0, 8, 16, 24, .. 
-		for (int i = 0; i < pointsCount; ++i) {
-			for (int j = 0; j < pointsCount; ++j) {
-				int ptX = j * 8;
-				int ptY = i * 8;
-				int posX = TILESIZE * ptX /*+ TILESIZE * 0.5*/;
-				int posY = TILESIZE * ptY + TILESIZE * 0.25;
-				if ((ptX >= playerptX - TILESCREENMAX * 0.5 && ptX <= playerptX + TILESCREENMAX * 0.5)
-					&& (ptY >= playerptY - TILESCREENMAX * 0.5 && ptY <= playerptY + TILESCREENMAX * 0.5)) {
-					TCHAR lpOut[128]; // 좌표
-					wsprintf(lpOut, TEXT("(%d, %d)"), ptX, ptY);
-					TextOut(hdcBuffer,
-						posX + scrollX, posY + scrollY, lpOut, lstrlen(lpOut));
+			// render Coordinates
+			int pointsCount = WORLD_WIDTH / 8; // 0, 8, 16, 24, .. 
+			for (int i = 0; i < pointsCount; ++i) {
+				for (int j = 0; j < pointsCount; ++j) {
+					int ptX = j * 8;
+					int ptY = i * 8;
+					int posX = TILESIZE * ptX /*+ TILESIZE * 0.5*/;
+					int posY = TILESIZE * ptY + TILESIZE * 0.25;
+					if ((ptX >= playerptX - TILESCREENMAX * 0.5 && ptX <= playerptX + TILESCREENMAX * 0.5)
+						&& (ptY >= playerptY - TILESCREENMAX * 0.5 && ptY <= playerptY + TILESCREENMAX * 0.5)) {
+						TCHAR lpOut[128]; // 좌표
+						wsprintf(lpOut, TEXT("(%d, %d)"), ptX, ptY);
+						TextOut(hdcBuffer,
+							posX + scrollX, posY + scrollY, lpOut, lstrlen(lpOut));
+					}
 				}
 			}
-		}
 
 
-		// render UI
-		{
-			RECT rc; rc.left = 0; rc.right = WINCX; rc.bottom = 50; rc.top = 0;
-			TCHAR lpUI[MAX_STR_LEN];
-			wsprintfW(lpUI, TEXT("♥LEVEL : %d                 ♥HP : %d                 ♥EXP : %d          "),
-				players[myid].level, players[myid].hp, players[myid].exp);
-			TextOut(hdcBuffer, rc.left, rc.bottom, (wchar_t*)lpUI, lstrlen(lpUI));
-		}
+			// render UI
+			{
+				RECT rc; rc.left = 0; rc.right = WINCX; rc.bottom = 50; rc.top = 0;
+				TCHAR lpUI[256];
+				wsprintfW(lpUI, TEXT("★LEVEL : %d                 ★HP : %d                 ★EXP : %d                 ★Position : (%d,%d)        "),
+					players[myid].level, players[myid].hp, players[myid].exp, players[myid].ptX, players[myid].ptY);
+				TextOut(hdcBuffer, rc.left, rc.bottom, (wchar_t*)lpUI, lstrlen(lpUI));
+			}
 
-		// reder chat
-		{
-			int chatY = 20;
-			RECT cRect; cRect.left = WINCX - 600; cRect.right = WINCX; cRect.bottom = WINCY - 50; cRect.top = WINCY - 100;
-			int num = 0;
-			for (auto iter = allchatList.begin(); iter != allchatList.end();) {
-				TextOut(hdcBuffer, cRect.left, cRect.top + chatY * num, iter->chat_buf, lstrlen(iter->chat_buf));
-				num++;
-				if (iter->timeout < high_resolution_clock::now()) {
-					iter = allchatList.erase(iter);
+			// reder chat
+			{
+				int chatY = 20;
+				RECT cRect; cRect.left = WINCX - 600; cRect.right = WINCX; cRect.bottom = WINCY - 50; cRect.top = WINCY - 100;
+				int num = 0;
+				for (auto iter = allchatList.begin(); iter != allchatList.end();) {
+					TextOut(hdcBuffer, cRect.left, cRect.top + chatY * num, iter->chat_buf, lstrlen(iter->chat_buf));
+					num++;
+					if (iter->timeout < high_resolution_clock::now()) {
+						iter = allchatList.erase(iter);
+					}
+					else
+						++iter;
 				}
-				else
-					++iter;
 			}
 		}
+		// 게임 오버 화면
+		else {
+			BitBlt(hdcBuffer, 0, 0, WINCX, WINCY, hdcGameover, 0, 0, SRCCOPY);
+			if (gameover_timeout < high_resolution_clock::now()) {
+				gameover = false;
+			}
+		}
+		// render BackBuffer at MainDC (Double Buffering)
 	}
-	// 게임 오버 화면
-	else {
-		BitBlt(hdcBuffer, 0, 0, WINCX, WINCY, hdcGameover, 0, 0, SRCCOPY);
-		if (gameover_timeout < high_resolution_clock::now()) {
-			gameover = false;
-		}
-	}
-	// render BackBuffer at MainDC (Double Buffering)
 	BitBlt(hdcMain, 0, 0, WINCX, WINCY, hdcBuffer, 0, 0, SRCCOPY);
 
 
+	DeleteDC(hdcMenu);
 	DeleteDC(hdcGameover);
 	DeleteDC(hdcAgro);
 	DeleteDC(hdcPeace);
@@ -598,6 +612,7 @@ void MainGame::setScroll(int ptX, int ptY)
 	//cout << "scrollY : " << scrollY << endl;
 }
 
+
 bool MainGame::isNear(int x1, int y1, int x2, int y2, int viewlimit)
 {
 	int dist = (x1 - x2) * (x1 - x2);
@@ -719,6 +734,15 @@ void MainGame::LoadBitmaps()
 	}
 	else
 		bitmaps[11] = tempBitmap;
+
+	// Menu
+	tempBitmap = (HBITMAP)LoadImage(NULL, L"Image/menu.bmp", IMAGE_BITMAP, 800, 800, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (NULL == tempBitmap) {
+		MessageBox(g_hwnd, L"Image/menu.bmp", L"Failed (LoadImage)", MB_OK);
+		return;
+	}
+	else
+		bitmaps[12] = tempBitmap;
 }
 
 void MainGame::InitNetwork()
@@ -758,7 +782,13 @@ void MainGame::InitNetwork()
 	send_wsabuf.len = sizeof(p);
 	DWORD iobyte;
 	p->type = CS_LOGIN;
-	sprintf_s(p->name, "P%03d", t_id % 1000);
+	//// 아이디
+	// sprintf_s(p->name, "P%03d", t_id % 1000);
+	char* pStr;
+	int strSize = WideCharToMultiByte(CP_ACP, 0, g_nicknamebuf, -1, NULL, 0, NULL, NULL);
+	pStr = new char[strSize];
+	WideCharToMultiByte(CP_ACP, 0, g_nicknamebuf, -1, pStr, strSize, 0, 0);
+	memcpy(&(p->name), (pStr), strSize);
 
 	int ret = WSASend(serverSocket, &send_wsabuf, 1, &iobyte, 0, NULL, NULL);
 	if (ret) {
@@ -795,12 +825,13 @@ void MainGame::SendPacket(void* packet)
 
 void MainGame::Release()
 {
-	for (int i = 0; i < 9; ++i) {
+	for (int i = 0; i < 13; ++i) {
 		DeleteObject(bitmaps[i]);
 	}
 	
 	closesocket(serverSocket);
 	WSACleanup();
 
-	recvThread.join();
+	
+	// recvThread.~thread();
 }
