@@ -11,7 +11,7 @@ function event_player_move(player)
 	my_y = API_get_y(myid);
 	if (player_x == my_x ) then
 		if (player_y == my_y ) then
-			API_SendMessage(myid , player, "Hello");
+			API_SendMessage(myid , player, "hahaha!");
 			API_RandomMove(myid , player);
 		end
 	end
