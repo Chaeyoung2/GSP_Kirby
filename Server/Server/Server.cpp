@@ -1,129 +1,20 @@
 #include <iostream>
-#include <WS2tcpip.h>
-#include <MSWSock.h>
-#include <thread>
-#include <vector>
-#include <mutex>
-#include <unordered_set>
-#include <atomic>
-#include <chrono>
-#include <queue>
-#include <windows.h>  
-#include <sqlext.h>  
-#include <string>
-#include "protocol.h"
+#include "Include.h"
 
-extern "C" {
-#include "include/lua.h"
-#include "include/lauxlib.h"
-#include "include/lualib.h"
-}
-
-using namespace std;
-using namespace chrono;
-
-
-constexpr int S_SIZE = 100;
-
-#pragma comment(lib,"odbc32.lib")
-#pragma comment(lib, "Ws2_32.lib")
-#pragma comment(lib, "MSWSock.lib")
-#pragma comment(lib, "lua54.lib")
-
-constexpr int KEY_SERVER = 1000000; // 클라이언트 아이디와 헷갈리지 않게 큰 값으로
-constexpr int MAX_BUFFER = 4096;
-constexpr int MIN_BUFFER = 1024;
-
-constexpr char OP_MODE_RECV = 0;
-constexpr char OP_MODE_SEND = 1;
-constexpr char OP_MODE_ACCEPT = 2;
-constexpr char OP_RANDOM_MOVE = 3;
-constexpr char OP_PLAYER_MOVE_NOTIFY = 4;
-constexpr char OP_PLAYER_HP_PLUS = 5;
-constexpr char OP_PLAYER_BUF = 6;
-
-// ## overlapped io pointer 확장.
-// overlapped io 구조체 자체는 쓸 만한 정보가 없다.
-// 따라서 정보들을 더 추가할 필요가 있다.
-// - 뒤에 추가하면 iocp가 모르고 에러도 나지 않는다. (pointer만 왔다갔다)
-// 꼭 필요한 정보
-// - 현재 이 i/o가 send인지 recv인지
-// - i/o buffer의 위치 (send할 때 버퍼도 같이 생성)
-struct OVER_EX {
-	WSAOVERLAPPED wsa_over;
-	char op_mode;
-	WSABUF wsa_buf;
-	unsigned char iocp_buf[MAX_BUFFER]; // iocp send/recv 버퍼
-	int object_id;
-};
-// ## 클라이언트 객체
-// 서버는 클라이언트 정보(id, 네트워크 접속 정보, 상태, 게임 정보)를 가진 객체 필요.
-// - 최대 동접과 같은 개수 필요
-// GetQueuedCompletionStatus를 받았을 때 클라이언트 객체를 찾을 수 있어야 한다.
-// - iocp에서 오고 가는 것을은 completion_key, overlapped i/o pointer, number of byte 뿐
-// - completion_key를 클라 객체의 포인터나 id나 index로 한다.
-struct client_info {
-	client_info() {}
-	client_info(int _id, short _x, short _y, SOCKET _sock, bool _connected) {
-		id = _id; x = _x; y = _y; sock = _sock; connected = _connected;
-	}
-	// ## overlapped 구조체
-	// 모든 send, recv는 overlapped 구조체가 필요하다.
-	// 하나의 구조체를 동시에 여러 호출에서 사용하는 것은 불가능
-	// 소켓 당 recv 호출은 무조건 한 개, send 호출은 동시에 여러개 가능
-	// - recv 호출용 overlapped 구조체 한 개를 계속 재사용하는 것이 바람직
-	// - send 버퍼도 같은 개수 필요
-	// - send 개수 제한이 없으므로 new/delete 사용
-	// - 성능을 위해서는 공유 pool을 만들어 관리
-	OVER_EX m_recv_over;
-	mutex c_lock;
-	int id = -1;
-	char name[MAX_ID_LEN];
-	short x, y;
-	short hp;
-	short level;
-	int exp;
-	lua_State* L;
-	SOCKET sock = -1;
-	atomic_bool connected = false;
-	atomic_bool is_active;
-	unsigned char* m_packet_start; // 패킷 시작 위치
-	unsigned char* m_recv_start; // recv 시작 위치
-	//mutex vl;
-	unordered_set<int> view_list;
-	int move_time;
-	short sx, sy;
-	bool is_AIrandommove = false;
-	short cnt_randommove = 0;
-	short encountered_id = 0;
-	short attackme_id = 0;
-	high_resolution_clock::time_point invincible_timeout;
-	short m_type;
-};
-struct event_type {
-	int obj_id;
-	system_clock::time_point wakeup_time;
-	int event_id;
-	int target_id;
-	constexpr bool operator < (const event_type& _Left) const {
-		return (wakeup_time > _Left.wakeup_time);
-	}
-};
-mutex id_lock; //아이디를 넣어줄때 상호배제해줄 락킹
-client_info g_clients[MAX_USER+NUM_NPC+NUM_OBSTACLE+NUM_ITEM];
 HANDLE h_iocp; // 별도의 커널 객체로 핸들을 받아서 사용한다.
 SOCKET g_listenSocket;
+client_info g_clients[MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM];
 OVER_EX g_accept_over; // accept용 overlapped 구조체
-priority_queue<event_type> timer_queue;
+mutex id_lock; //아이디를 넣어줄때 상호배제해줄 락킹
 mutex timer_l;
 mutex sector_l;
-int PLAYER_ATTACKDAMAGE = 20;
-
+priority_queue<event_type> timer_queue;
 unordered_set<int> g_sector[S_SIZE][S_SIZE];
-
 SQLHENV henv;
 SQLHDBC hdbc;
 SQLHSTMT hstmt = 0;
+
+int PLAYER_ATTACKDAMAGE = 20;
 
 
 void error_display(const char* msg, int err_no);
@@ -192,15 +83,13 @@ int main()
 		cl.connected = false;
 	}
 
-#ifdef _DEBUG
-	cout << "Initialize DB" << endl;
-#endif
 	InitializeDB();
 
 	wcout.imbue(std::locale("korean"));
 
 	WSADATA WSAdata;
-	WSAStartup(MAKEWORD(2, 0), &WSAdata);
+	int ret = WSAStartup(MAKEWORD(2, 0), &WSAdata);
+	if (ret != 0) error_display("WSAStartup()", 0);
 	// ## iocp - 준비.
 	// iocp 커널 객체 생성. iocp 객체를 생성하여 핸들을 받아 사용한다.
 	h_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
@@ -257,9 +146,9 @@ int main()
 // 패킷 처리 루틴
 void ProcessPacket(int id)
 {
-	char p_type = g_clients[id].m_packet_start[1]; // 패킷 타입
+	char p_type = g_clients[id].m_packet_start[1];
 	switch (p_type) {
-	case CS_LOGIN:
+	case CS_LOGIN: 
 	{
 		cs_packet_login* p = reinterpret_cast<cs_packet_login*>(g_clients[id].m_packet_start);
 		g_clients[id].c_lock.lock();
@@ -881,9 +770,6 @@ void WorkerThread() {
 		int ret = GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
 		// 여기부터 lpover에 따른 처리
 		key = static_cast<int>(iocp_key);
-//#ifdef _DEBUG
-//		cout << "Completion Detected\n";
-//#endif
 		if (FALSE == ret) { // max user exceed 문제 방지. // 0이 나오면 진행하지 않는다.
 			int error_no = WSAGetLastError();
 			if (64 == error_no) { // 
@@ -1003,6 +889,11 @@ void AddNewClient(SOCKET ns)
 	int compare_val = -1;
 	for (int j = 0; j < MAX_USER; ++j) {
 		if (false == g_clients[j].connected) {
+			// c++11에서의 CAS 구현
+			// Compare And Set
+			// Atomic, Wait-Free
+			// 공유 메모리 i가 있을 때, 모든 스레드에서 아래 CAS를 실행시키면
+			// 오직 하나의 스레드만 i가 compare_val이 되면서 true 리턴
 			atomic_compare_exchange_strong(
 				reinterpret_cast<atomic_int*>(&i), &compare_val, j);
 			break;
