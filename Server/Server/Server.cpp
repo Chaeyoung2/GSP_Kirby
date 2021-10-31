@@ -90,11 +90,12 @@ int main()
 	WSADATA WSAdata;
 	int ret = WSAStartup(MAKEWORD(2, 0), &WSAdata);
 	if (ret != 0) error_display("WSAStartup()", 0);
+
 	// ## iocp - 준비.
-	// iocp 커널 객체 생성. iocp 객체를 생성하여 핸들을 받아 사용한다.
+	// iocp 커널 객체 생성. iocp 객체를 생성, 핸들을 받아 사용.
 	h_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
 	g_listenSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
-	// ## iocp 객체와 소켓 연결. (listen socket을 iocp에 등록)
+	// ## iocp - 객체와 소켓 연결. (listen socket을 iocp에 등록)
 	// key 값은 unique하게 설정, 마지막 값 무시.
 	CreateIoCompletionPort(reinterpret_cast<HANDLE>(g_listenSocket), h_iocp, KEY_SERVER, 0); // iocp에 리슨 소켓 등록
 
@@ -104,14 +105,13 @@ int main()
 	serverAddress.sin_port = htons(SERVER_PORT);
 	serverAddress.sin_addr.s_addr = INADDR_ANY;
 	::bind(g_listenSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
-	listen(g_listenSocket, 5);
+	listen(g_listenSocket, SOMAXCONN);
 
 	// Accept
 	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	g_accept_over.op_mode = OP_MODE_ACCEPT;
 	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
 	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));
-
 	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
 
 	// NPC 정보 세팅
@@ -794,9 +794,6 @@ void WorkerThread() {
 				DisconnectClient(key);
 			}
 			else { // 패킷 처리
-//#ifdef _DEBUG
-//				cout << "Packet from Client [" << key << "]\n";
-//#endif
 				ProcessRecv(key, io_size);
 			}
 		}

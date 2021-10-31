@@ -215,18 +215,7 @@ void MainGame::Start()
 
 void MainGame::Update()
 {
-	//InputKeyState();
 	send_last_time += 1;
-
-	//// 0: up, 1:down, 2:left, 3:right
-	//if (GetAsyncKeyState(VK_UP))
-	//	InputKeyState(0);
-	//if (GetAsyncKeyState(VK_DOWN))
-	//	InputKeyState(1);
-	//if (GetAsyncKeyState(VK_LEFT))
-	//	InputKeyState(2);
-	//if (GetAsyncKeyState(VK_RIGHT))
-	//	InputKeyState(3);
 }
 
 void MainGame::Render()
