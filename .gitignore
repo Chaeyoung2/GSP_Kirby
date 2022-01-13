@@ -1,4 +1,5 @@
-.suo
-.db
-.pdb
-.obj
+/.vs/
+/.x64/
+/.Debug/
+/Image/
+/Images/
