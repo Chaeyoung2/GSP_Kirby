@@ -7,7 +7,7 @@ constexpr int MAX_USER = 10000;
 constexpr int WORLD_WIDTH = 800;
 constexpr int WORLD_HEIGHT = 800;
 constexpr int MAX_STR_LEN = 100;
-constexpr int VIEW_LIMIT = 7;				// 시야 반지름, 상대방과 사이에 6개의 타일이 있어도 보여야 함.
+constexpr int VIEW_LIMIT = 7; // 시야 반지름, 상대방과 사이에 6개의 타일이 있어도 보여야 함.
 
 constexpr int NUM_NPC = 10000;
 
@@ -27,7 +27,7 @@ constexpr int OTYPE_NPC_AGRO = 2; // agro 몬스터
 constexpr int OTYPE_ITEM_HP = 3; // HP 아이템
 constexpr int OTYPE_ITEM_BUF = 4; // 버프 아이템
 
-#pragma pack (push, 1)
+
 
 constexpr char SC_PACKET_LOGIN_OK	= 0;
 constexpr char SC_PACKET_MOVE		= 1;
@@ -46,6 +46,7 @@ constexpr char CS_TELEORT	= 5;				// 부하 테스트용 동접 테스트를 위해 텔러포트로
 constexpr char CS_PORTION = 6;
 constexpr char CS_ATTACKS = 7;
 
+#pragma pack (push, 1)
 
 struct sc_packet_login_ok {
 	char size;
@@ -137,13 +138,6 @@ struct cs_packet_logout {
 	char	size;
 	char	type;
 };
-
-struct cs_packet_teleport {
-	char size;
-	char type;
-	short x, y;
-};
-
 
 
 #pragma pack (pop)

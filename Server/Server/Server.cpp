@@ -1,5 +1,4 @@
-#include <iostream>
-#include "Include.h"
+#include "Server.h"
 
 HANDLE h_iocp; // 별도의 커널 객체로 핸들을 받아서 사용한다.
 SOCKET g_listenSocket;
@@ -16,104 +15,18 @@ SQLHSTMT hstmt = 0;
 
 int PLAYER_ATTACKDAMAGE = 20;
 
-
-void error_display(const char* msg, int err_no);
-
-void PlayerHPPlus(int id);
-
-void InitializeObstacle();
-void InitializeItem();
-
-void InitializeNPC();
-void RandomMoveNPC(int id);
-void WakeUpNPC(int id);
-
-void AddTimer(int obj_id, int ev_type, system_clock::time_point t);
-
-void ProcessPacket(int id);
-void ProcessRecv(int id, DWORD iosize);
-void ProcessMove(int id, char dir);
-void ProcessAttack(int id);
-void ProcessAttackS(int id);
-
-void StatChange_MonsterDead(int id, int mon_id);
-void StatChange_MonsterCollide(int id, int mon_id);
-void StatChange_ItemCollide(int id, int item_id);
-
-void WorkerThread();
-void TimerThread();
-
-void AddNewClient(SOCKET ns);
-void DisconnectClient(int id);
-
-void SendPacket(int id, void* p);
-void SendLeavePacket(int to_id, int id);
-void SendLoginOK(int id);
-void SendEnterPacket(int to_id, int new_id);
-void SendMovePacket(int to_id, int id);
-void SendChatPacket(int to_client, int id, char* mess);
-void SendStatChangePacket(int id);
-
-int calcDist(int p1, int p2);
-
-bool IsCollide(int p1, int p2);
-
-bool IsNear(int p1, int p2);
-bool IsPlayer(int p1);
-bool IsNPC(int p1);
-bool IsObstacle(int p1);
-bool IsItem(int p1);
-bool IsInvincible(int p1);
-
-int API_SendMessage(lua_State* L);
-int API_get_y(lua_State* L);
-int API_get_x(lua_State* L);
-int API_RandomMove(lua_State* L);
-
-
-void InitializeDB();
-void LoadDB(const string name, int id);
-void SaveDB(string name, int lv, int x, int y, int exp);
-void CloseDB();
-void DB_ERROR(SQLHANDLE hHandle, SQLSMALLINT hType, RETCODE RetCode);
-
 int main()
 {
+	wcout.imbue(std::locale("korean"));
+
 	for (auto& cl : g_clients) {
 		cl.connected = false;
 	}
 
 	InitializeDB();
 
-	wcout.imbue(std::locale("korean"));
-
-	WSADATA WSAdata;
-	int ret = WSAStartup(MAKEWORD(2, 0), &WSAdata);
-	if (ret != 0) error_display("WSAStartup()", 0);
-
-	// ## iocp - 준비.
-	// iocp 커널 객체 생성. iocp 객체를 생성, 핸들을 받아 사용.
-	h_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
-	g_listenSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
-	// ## iocp - 객체와 소켓 연결. (listen socket을 iocp에 등록)
-	// key 값은 unique하게 설정, 마지막 값 무시.
-	CreateIoCompletionPort(reinterpret_cast<HANDLE>(g_listenSocket), h_iocp, KEY_SERVER, 0); // iocp에 리슨 소켓 등록
-
-	SOCKADDR_IN serverAddress;
-	memset(&serverAddress, 0, sizeof(SOCKADDR_IN));
-	serverAddress.sin_family = AF_INET;
-	serverAddress.sin_port = htons(SERVER_PORT);
-	serverAddress.sin_addr.s_addr = INADDR_ANY;
-	::bind(g_listenSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
-	listen(g_listenSocket, SOMAXCONN);
-
-	// Accept
-	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
-	g_accept_over.op_mode = OP_MODE_ACCEPT;
-	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
-	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));
-	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
-
+	InitializeNetwork();
+	
 	// NPC 정보 세팅
 	InitializeNPC();
 
@@ -125,6 +38,7 @@ int main()
 
 	// timer thread 생성
 	thread timer_thread{ TimerThread };
+
 	// ## worker thread 생성.
 	// 그러나 iocp는 쓰레드 없이도 동작 가능하긴 하다.
 	vector <thread> workerthreads;
@@ -137,9 +51,8 @@ int main()
 
 	closesocket(g_listenSocket);
 	WSACleanup();
-
-	// SaveDB(L"Chae", g_clients[0].level, g_clients[0].x, g_clients[0].y, g_clients[0].exp);
 	CloseDB();
+
 	return 0;
 }
 
@@ -778,7 +691,7 @@ void WorkerThread() {
 				continue;
 			}
 			else 
-				error_display("GQCS Error : ", error_no);
+				ErrorDisplay("GQCS Error : ", error_no);
 		}
 		OVER_EX* over_ex = reinterpret_cast<OVER_EX*>(lpover);
 		switch (over_ex->op_mode) {
@@ -965,7 +878,7 @@ void AddNewClient(SOCKET ns)
 		if (ret == SOCKET_ERROR) {
 			int error_no = WSAGetLastError();
 			if (error_no != ERROR_IO_PENDING) {
-				error_display("WSARecv : ", error_no);
+				ErrorDisplay("WSARecv : ", error_no);
 			}
 		}
 
@@ -1195,7 +1108,7 @@ bool IsInvincible(int p1) {
 	return true;
 }
 
-void error_display(const char* msg, int err_no) {
+void ErrorDisplay(const char* msg, int err_no) {
 	WCHAR* h_mess;
 	FormatMessage(
 		FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
@@ -1248,6 +1161,35 @@ void InitializeNPC()
 //#ifdef _DEBUG
 	cout << "Initializing NPCs finishied.\n";
 //#endif
+}
+
+void InitializeNetwork()
+{
+	WSADATA WSAdata;
+	int ret = WSAStartup(MAKEWORD(2, 0), &WSAdata);
+	if (ret != 0) ErrorDisplay("WSAStartup()", 0);
+
+	h_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
+	g_listenSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+
+
+	CreateIoCompletionPort(reinterpret_cast<HANDLE>(g_listenSocket), h_iocp, KEY_SERVER, 0); // iocp에 리슨 소켓 등록
+
+	SOCKADDR_IN serverAddress;
+	memset(&serverAddress, 0, sizeof(SOCKADDR_IN));
+	serverAddress.sin_family = AF_INET;
+	serverAddress.sin_port = htons(SERVER_PORT);
+	serverAddress.sin_addr.s_addr = INADDR_ANY;
+	::bind(g_listenSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
+	listen(g_listenSocket, SOMAXCONN);
+
+	// Accept
+	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+	g_accept_over.op_mode = OP_MODE_ACCEPT;
+	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
+	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));
+	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
+
 }
 
 void InitializeObstacle() {
