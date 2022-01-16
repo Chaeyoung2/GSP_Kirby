@@ -28,7 +28,6 @@ constexpr int OTYPE_ITEM_HP = 3; // HP 아이템
 constexpr int OTYPE_ITEM_BUF = 4; // 버프 아이템
 
 
-
 constexpr char SC_PACKET_LOGIN_OK	= 0;
 constexpr char SC_PACKET_MOVE		= 1;
 constexpr char SC_PACKET_ENTER		= 2;
@@ -45,6 +44,12 @@ constexpr char CS_LOGOUT	= 4;
 constexpr char CS_TELEORT	= 5;				// 부하 테스트용 동접 테스트를 위해 텔러포트로 Hot Spot 해소
 constexpr char CS_PORTION = 6;
 constexpr char CS_ATTACKS = 7;
+
+
+constexpr char MV_UP = 0;
+constexpr char MV_DOWN = 1;
+constexpr char MV_LEFT = 2;
+constexpr char MV_RIGHT = 3;
 
 #pragma pack (push, 1)
 
@@ -84,7 +89,7 @@ struct sc_packet_leave {
 struct sc_packet_chat {
 	char  size;
 	char  type;
-	int	  id;			// teller
+	int	  id;			
 	char  message[MAX_STR_LEN];
 };
 
@@ -111,10 +116,6 @@ struct cs_packet_login {
 	char  name[MAX_ID_LEN];
 };
 
-constexpr char MV_UP = 0;
-constexpr char MV_DOWN = 1;
-constexpr char MV_LEFT = 2;
-constexpr char MV_RIGHT = 3;
 
 struct cs_packet_move {
 	char  size;

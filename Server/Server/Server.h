@@ -18,8 +18,8 @@ void AddTimer(int obj_id, int ev_type, system_clock::time_point t);
 void ProcessPacket(int id);
 void ProcessRecv(int id, DWORD iosize);
 void ProcessMove(int id, char dir);
-void ProcessAttack(int id);
-void ProcessAttackS(int id);
+void ProcessAttack(int id, int type);
+void ProcessLogin(int id);
 
 void StatChange_MonsterDead(int id, int mon_id);
 void StatChange_MonsterCollide(int id, int mon_id);

@@ -4,7 +4,6 @@ HANDLE h_iocp; // 별도의 커널 객체로 핸들을 받아서 사용한다.
 SOCKET g_listenSocket;
 client_info g_clients[MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM];
 OVER_EX g_accept_over; // accept용 overlapped 구조체
-mutex id_lock; //아이디를 넣어줄때 상호배제해줄 락킹
 mutex timer_l;
 mutex sector_l;
 priority_queue<event_type> timer_queue;
@@ -24,23 +23,12 @@ int main()
 	}
 
 	InitializeDB();
-
 	InitializeNetwork();
-	
-	// NPC 정보 세팅
 	InitializeNPC();
-
-	// 장애물 세팅
 	InitializeObstacle();
-
-	// 아이템 세팅
 	InitializeItem();
 
-	// timer thread 생성
 	thread timer_thread{ TimerThread };
-
-	// ## worker thread 생성.
-	// 그러나 iocp는 쓰레드 없이도 동작 가능하긴 하다.
 	vector <thread> workerthreads;
 	for (int i = 0; i < 6; ++i) {
 		workerthreads.emplace_back(WorkerThread);
@@ -67,60 +55,10 @@ void ProcessPacket(int id)
 		g_clients[id].c_lock.lock();
 		strcpy_s(g_clients[id].name, p->name);
 		g_clients[id].c_lock.unlock();
-		char array[MAX_ID_LEN];
-		memcpy(array, p->name, sizeof(p->name));
-		//std::wstring wstr(array, &array[sizeof(p->name) + 1]);
-		string str(p->name);
-		LoadDB(str, id);
+		LoadDB(string(p->name), id);
 		SendLoginOK(id);
-		// Players
-		for (int i = 0; i < MAX_USER; ++i) {
-			if (false == g_clients[i].connected) continue;
-			if (id == i) continue;
-			if (false == IsNear(i, id)) continue;
-			g_clients[i].c_lock.lock();
-			if (0 == g_clients[i].view_list.count(id)) {
-				g_clients[i].view_list.insert(id);
-				g_clients[i].c_lock.unlock();
-				SendEnterPacket(i, id);
-			}
-			else
-				g_clients[i].c_lock.unlock();
-			g_clients[id].c_lock.lock();
-			if (0 == g_clients[id].view_list.count(i)) {
-				g_clients[id].view_list.insert(i);
-				g_clients[id].c_lock.unlock();
-				SendEnterPacket(id, i);
-			}
-			else {
-				g_clients[id].c_lock.unlock();
-			}
-		}
-		// NPC
-		for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
-			if (false == IsNear(id, i)) continue;
-			g_clients[id].c_lock.lock();
-			g_clients[id].view_list.insert(i);
-			g_clients[id].c_lock.unlock();
-			SendEnterPacket(id, i);
-			WakeUpNPC(i);
-		}
-		// Obstacle
-		for (int i = MAX_USER + NUM_NPC; i < MAX_USER + NUM_NPC + NUM_OBSTACLE; ++i) {
-			if (false == IsNear(id, i)) continue;
-			g_clients[id].c_lock.lock();
-			g_clients[id].view_list.insert(i);
-			g_clients[id].c_lock.unlock();
-			SendEnterPacket(id, i);
-		}
-		// Item
-		for (int i = MAX_USER + NUM_NPC + NUM_OBSTACLE; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
-			if (false == IsNear(id, i)) continue;
-			g_clients[id].c_lock.lock();
-			g_clients[id].view_list.insert(i);
-			g_clients[id].c_lock.unlock();
-			SendEnterPacket(id, i);
-		}
+		ProcessLogin(id);
+
 	}
 	break;
 	case CS_MOVE:
@@ -134,19 +72,17 @@ void ProcessPacket(int id)
 	break;
 	case CS_ATTACK:
 	{
-		ProcessAttack(id);
+		ProcessAttack(id, 0);
 	}
 	break;
 	case CS_ATTACKS:
 	{
-		ProcessAttackS(id);
+		ProcessAttack(id, 1);
 	}
 	break;
 	default:
 	{
-#ifdef _DEBUG
 		cout << "Unkown Packet type[" << p_type << "] from Client [" << id << "]\n";
-#endif
 		while (true);
 	}
 	break;
@@ -193,11 +129,6 @@ void ProcessRecv(int id, DWORD iosize)
 	if (true == g_clients[id].connected.compare_exchange_strong(connected, true)) {
 		WSARecv(g_clients[id].sock, &g_clients[id].m_recv_over.wsa_buf, 1, NULL, &recv_flag, &g_clients[id].m_recv_over.wsa_over, NULL);
 	}
-	// 최적화 전
-	//g_clients[id].c_lock.lock();
-	//if (true == g_clients[id].connected)
-	//	WSARecv(g_clients[id].sock, &g_clients[id].m_recv_over.wsa_buf, 1, NULL, &recv_flag, &g_clients[id].m_recv_over.wsa_over, NULL);
-	//g_clients[id].c_lock.unlock();
 }
 
 void ProcessMove(int id, char dir)
@@ -208,8 +139,6 @@ void ProcessMove(int id, char dir)
 	short sy = g_clients[id].sy;
 	short y = g_clients[id].y;
 	short x = g_clients[id].x;
-	///// 뷰 리스트
-	unordered_set<int> old_viewlist = g_clients[id].view_list;
 	// 임시 좌표1 이동
 	switch (dir) {
 	case MV_UP:
@@ -268,16 +197,16 @@ void ProcessMove(int id, char dir)
 	}
 
 	// 뷰 리스트 처리
+	unordered_set<int> old_viewlist = g_clients[id].view_list;
 	unordered_set<int> new_viewlist; 
 	for(auto i : g_sector[cur_sx][cur_sy]){
 		if (id == i) continue;
 		if (false == g_clients[i].connected) continue;
-		if (true == IsNear(id, i)) { // i가 id와 가깝다면
-			new_viewlist.insert(i); // 뉴 뷰리스트에 i를 넣는다
+		if (true == IsNear(id, i)) { 
+			new_viewlist.insert(i); 
 		}
 	}
 	for(auto i : g_sector[cur_sx][cur_sy]){
-		// if (false == IsNPC(i) && false == IsObstacle(i)) continue;
 		if (true == IsNear(id, i)) {
 			new_viewlist.insert(i);
 			if(true == IsNPC(i))
@@ -287,14 +216,14 @@ void ProcessMove(int id, char dir)
 
 	// 시야 처리
 	for (int ob : new_viewlist) {
-		// 이동 후 new viewlist (시야에 들어온) ob에 대해 처리
+		// 이동 후 new viewlist에 들어온 ob에 대한 처리
 		if (0 == old_viewlist.count(ob)) { // 이동 전에 시야에 없었던 경우
 			g_clients[id].c_lock.lock();
 			g_clients[id].view_list.insert(ob); // 이동한 클라이언트(id)의 실제 뷰리스트에 넣는다
 			g_clients[id].c_lock.unlock();
 			SendEnterPacket(id, ob); // 이동한 클라이언트(id)에게 시야에 들어온 ob를 enter하게 한다
 
-			// 이번에는 뷰리스트에 있는 ob의 ! 뷰리스트 처리.
+			// 뷰 리스트에 있는 ob의 뷰리스트 처리.
 			if (true == IsPlayer(ob)) {
 				if (0 == g_clients[ob].view_list.count(id)) { // 시야에 들어온 ob의 뷰리스트에 id가 없었다면
 					g_clients[ob].c_lock.lock();
@@ -368,31 +297,160 @@ void ProcessMove(int id, char dir)
 	}
 }
 
-void ProcessAttack(int id) {
-	// 클라이언트 id가 공격 시도.
-	short x[4], y[4]; // 0 up, 1 down, 2 left, 3 right
+void ProcessAttack(int id, int type) {
+
+	int* x = nullptr, * y = nullptr;
+	int size = 0;
 	short id_x = g_clients[id].x, id_y = g_clients[id].y;
-	for (int dir = 0; dir < 4; ++dir) {
-		if (dir == 0) {
-			x[dir] = id_x;
-			y[dir] = id_y - 1;
-		} else if (dir == 1) {
-			x[dir] = id_x;
-			y[dir] = id_y + 1;
-		} else if (dir == 2) {
-			x[dir] = id_x - 1;
-			y[dir] = id_y;
-		} else if (dir == 3) {
-			x[dir] = id_x + 1;
-			y[dir] = id_y;
+
+	switch (type) {
+	case 0:
+	{
+		size = 4; // 0 up, 1 down, 2 left, 3 right
+
+		x = new int[size];
+		y = new int[size];
+
+		for (int dir = 0; dir < size; ++dir) {
+			if (dir == 0) {
+				x[dir] = id_x;
+				y[dir] = id_y - 1;
+			}
+			else if (dir == 1) {
+				x[dir] = id_x;
+				y[dir] = id_y + 1;
+			}
+			else if (dir == 2) {
+				x[dir] = id_x - 1;
+				y[dir] = id_y;
+			}
+			else if (dir == 3) {
+				x[dir] = id_x + 1;
+				y[dir] = id_y;
+			}
 		}
 	}
+		break;
+	case 1:
+	{
+		size = 25;
+
+		x = new int[size];
+		y = new int[size];
+
+		for (int dir = 0; dir < 25; ++dir) {
+			if (dir == 0) {
+				x[dir] = id_x;
+				y[dir] = id_y;
+			}
+			else if (dir == 1) {
+				x[dir] = id_x;
+				y[dir] = id_y - 3;
+			}
+			else if (dir == 2) {
+				x[dir] = id_x - 1;
+				y[dir] = id_y - 2;
+			}
+			else if (dir == 3) {
+				x[dir] = id_x;
+				y[dir] = id_y - 2;
+			}
+			else if (dir == 4) {
+				x[dir] = id_x + 1;
+				y[dir] = id_y - 2;
+			}
+			else if (dir == 5) {
+				x[dir] = id_x - 2;
+				y[dir] = id_y - 1;
+			}
+			else if (dir == 6) {
+				x[dir] = id_x - 1;
+				y[dir] = id_y - 1;
+			}
+			else if (dir == 7) {
+				x[dir] = id_x;
+				y[dir] = id_y - 1;
+			}
+			else if (dir == 8) {
+				x[dir] = id_x + 1;
+				y[dir] = id_y - 1;
+			}
+			else if (dir == 9) {
+				x[dir] = id_x + 2;
+				y[dir] = id_y - 1;
+			}
+			else if (dir == 10) {
+				x[dir] = id_x - 3;
+				y[dir] = id_y;
+			}
+			else if (dir == 11) {
+				x[dir] = id_x - 2;
+				y[dir] = id_y;
+			}
+			else if (dir == 12) {
+				x[dir] = id_x - 1;
+				y[dir] = id_y;
+			}
+			else if (dir == 13) {
+				x[dir] = id_x + 1;
+				y[dir] = id_y;
+			}
+			else if (dir == 14) {
+				x[dir] = id_x + 2;
+				y[dir] = id_y;
+			}
+			else if (dir == 15) {
+				x[dir] = id_x + 3;
+				y[dir] = id_y;
+			}
+			else if (dir == 16) {
+				x[dir] = id_x - 2;
+				y[dir] = id_y + 1;
+			}
+			else if (dir == 17) {
+				x[dir] = id_x - 1;
+				y[dir] = id_y + 1;
+			}
+			else if (dir == 18) {
+				x[dir] = id_x;
+				y[dir] = id_y + 1;
+			}
+			else if (dir == 19) {
+				x[dir] = id_x + 1;
+				y[dir] = id_y + 1;
+			}
+			else if (dir == 20) {
+				x[dir] = id_x + 2;
+				y[dir] = id_y + 1;
+			}
+			else if (dir == 21) {
+				x[dir] = id_x - 1;
+				y[dir] = id_y + 2;
+			}
+			else if (dir == 22) {
+				x[dir] = id_x;
+				y[dir] = id_y + 2;
+			}
+			else if (dir == 23) {
+				x[dir] = id_x + 1;
+				y[dir] = id_y + 2;
+			}
+			else if (dir == 24) {
+				x[dir] = id_x;
+				y[dir] = id_y + 3;
+			}
+		}
+	}
+		break;
+	}
+
+
 
 	unordered_set<int> vl = g_clients[id].view_list;
 	// 플레이어 공격과 npc의 충돌 검사
 	for (auto i : vl) {
 		if (false == IsNPC(i)) continue;
-		for (int dir = 0; dir < 4; ++dir) {
+		for (int dir = 0; dir < size; ++dir) {
 			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
 				if (false == IsInvincible(i)) {
 					// 충돌
@@ -411,135 +469,50 @@ void ProcessAttack(int id) {
 
 }
 
-void ProcessAttackS(int id) {
-	// 클라이언트 id가 공격 시도.
-	short x[26], y[26]; 
-	short id_x = g_clients[id].x, id_y = g_clients[id].y;
-	for (int dir = 0; dir < 25; ++dir) {
-		if (dir == 0) {
-			x[dir] = id_x;
-			y[dir] = id_y;
+void ProcessLogin(int id)
+{
+	for (int i = 0; i < MAX_USER; ++i) {
+		if (false == g_clients[i].connected) continue;
+		if (id == i) continue;
+		if (false == IsNear(i, id)) continue;
+		g_clients[i].c_lock.lock();
+		if (0 == g_clients[i].view_list.count(id)) {
+			g_clients[i].view_list.insert(id);
+			g_clients[i].c_lock.unlock();
+			SendEnterPacket(i, id);
 		}
-		else if (dir == 1) {
-			x[dir] = id_x;
-			y[dir] = id_y - 3;
+		else {
+			g_clients[i].c_lock.unlock();
 		}
-		else if (dir == 2) {
-			x[dir] = id_x - 1;
-			y[dir] = id_y - 2;
+		g_clients[id].c_lock.lock();
+		if (0 == g_clients[id].view_list.count(i)) {
+			g_clients[id].view_list.insert(i);
+			g_clients[id].c_lock.unlock();
+			SendEnterPacket(id, i);
 		}
-		else if (dir == 3) {
-			x[dir] = id_x;
-			y[dir] = id_y - 2;
-		}
-		else if (dir == 4) {
-			x[dir] = id_x + 1;
-			y[dir] = id_y - 2;
-		}
-		else if (dir == 5) {
-			x[dir] = id_x - 2;
-			y[dir] = id_y - 1;
-		}
-		else if (dir == 6) {
-			x[dir] = id_x - 1;
-			y[dir] = id_y - 1;
-		}
-		else if (dir == 7) {
-			x[dir] = id_x;
-			y[dir] = id_y - 1;
-		}
-		else if (dir == 8) {
-			x[dir] = id_x + 1;
-			y[dir] = id_y - 1;
-		}
-		else if (dir == 9) {
-			x[dir] = id_x + 2;
-			y[dir] = id_y - 1;
-		}
-		else if (dir == 10) {
-			x[dir] = id_x - 3;
-			y[dir] = id_y ;
-		}
-		else if (dir == 11) {
-			x[dir] = id_x - 2;
-			y[dir] = id_y ;
-		}
-		else if (dir == 12) {
-			x[dir] = id_x - 1;
-			y[dir] = id_y ;
-		}
-		else if (dir == 13) {
-			x[dir] = id_x + 1;
-			y[dir] = id_y ;
-		}
-		else if (dir == 14) {
-			x[dir] = id_x + 2;
-			y[dir] = id_y ;
-		}
-		else if (dir == 15) {
-			x[dir] = id_x + 3;
-			y[dir] = id_y ;
-		}
-		else if (dir == 16) {
-			x[dir] = id_x - 2;
-			y[dir] = id_y + 1;
-		}
-		else if (dir == 17) {
-			x[dir] = id_x - 1;
-			y[dir] = id_y + 1;
-		}
-		else if (dir == 18) {
-			x[dir] = id_x;
-			y[dir] = id_y + 1;
-		}
-		else if (dir == 19) {
-			x[dir] = id_x +1;
-			y[dir] = id_y + 1;
-		}
-		else if (dir == 20) {
-			x[dir] = id_x + 2;
-			y[dir] = id_y + 1;
-		}
-		else if (dir == 21) {
-			x[dir] = id_x - 1;
-			y[dir] = id_y + 2;
-		}
-		else if (dir == 22) {
-			x[dir] = id_x;
-			y[dir] = id_y + 2;
-		}
-		else if (dir == 23) {
-			x[dir] = id_x + 1;
-			y[dir] = id_y + 2;
-		}
-		else if (dir == 24) {
-			x[dir] = id_x;
-			y[dir] = id_y + 3;
+		else {
+			g_clients[id].c_lock.unlock();
 		}
 	}
-
-	unordered_set<int> vl = g_clients[id].view_list;
-	// 플레이어 공격과 npc의 충돌 검사
-	for (auto i : vl) {
-		if (false == IsNPC(i)) continue;
-		for (int dir = 0; dir < 25; ++dir) {
-			if (g_clients[i].x == x[dir] && g_clients[i].y == y[dir]) {
-				if (false == IsInvincible(i)) {
-					// 충돌
-					g_clients[i].c_lock.lock();
-					g_clients[i].invincible_timeout = high_resolution_clock::now() + 2s;
-					g_clients[i].hp -= PLAYER_ATTACKDAMAGE * 2;
-					g_clients[i].attackme_id = id;
-					g_clients[i].c_lock.unlock();
-					char mess[MAX_STR_LEN];
-					sprintf_s(mess, "플레이어 %d이 몬스터 %d를 버프 공격 하여 %d의 데미지를 입혔습니다.", id, i, PLAYER_ATTACKDAMAGE * 2);
-					SendChatPacket(id, -1, mess); // 전챗
-				}
-			}
-		}
+	// NPC
+	for (int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
+		if (false == IsNear(id, i)) continue;
+		g_clients[id].c_lock.lock();
+		g_clients[id].view_list.insert(i);
+		g_clients[id].c_lock.unlock();
+		SendEnterPacket(id, i);
+		WakeUpNPC(i);
 	}
-
+	// Obstacle, Item
+	for (int i = MAX_USER + NUM_NPC; i < MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM; ++i) {
+		if (false == IsNear(id, i)) continue;
+		g_clients[id].c_lock.lock();
+		g_clients[id].view_list.insert(i);
+		g_clients[id].c_lock.unlock();
+		SendEnterPacket(id, i);
+	}
 }
+
 
 void StatChange_MonsterDead(int id, int mon_id) {
 	int mon_type = g_clients[mon_id].m_type;
@@ -582,9 +555,7 @@ void StatChange_MonsterDead(int id, int mon_id) {
 	g_clients[id].c_lock.unlock();
 	SendStatChangePacket(id); // 상태 바뀜 패킷
 
-#ifdef _DEBUG
 	cout << "몬스터 " << mon_id << "(이)가 " << g_clients[id].attackme_id << "에 의해 사망했습니다." << endl;
-#endif
 	char mess[MAX_STR_LEN];
 	sprintf_s(mess, "플레이어 %d가 몬스터 %d를 무찔러서 %d의 경험치를 얻었습니다.", id, mon_id, exp);
 	SendChatPacket(id, -1, mess); // 전챗 패킷
@@ -660,33 +631,18 @@ void StatChange_ItemCollide(int id, int item_id) {
 }
 
 void WorkerThread() {
-	// 반복
-	// - 쓰레드를 iocp thread pool에 등록 (GQCS)
-	// - iocp가 처리를 맡긴 i/o 완료
-	// - 데이터 처리 꺼내기 q
-	// - 꺼낸 i/o 완료, 데이터 처리
 	while (true) {
 		DWORD io_size;
 		ULONG_PTR iocp_key;
 		int key;
 		WSAOVERLAPPED* lpover;
-		// ## iocp 완료 처리.
-		// i/o 완료 상태를 report한다.
-		// - 에러 처리/접속 종료 처리
-		// - Send / Recv / Accept 처리
-		// -- 확장 overlapped i/o 구조체를 유용하게 사용
-		// -- recv : 패킷이 다 왔나 검사 후 다 왔으면 패킷 처리, 여러 패킷 한번에 처리, 계속 recv 호출
-		// -- send : overlapped 구조체와 버퍼 free
-		// -- accept : 새 클라이언트 객체 등록
-		// thread를 iocp의 thread pool에 등록하고 멈춤
-		// 인자: 커널 object, 전송된 데이터 양, 미리 정해놓은 id, overlapped io 구조체
 		int ret = GetQueuedCompletionStatus(h_iocp, &io_size, &iocp_key, &lpover, INFINITE);
-		// 여기부터 lpover에 따른 처리
-		key = static_cast<int>(iocp_key);
-		if (FALSE == ret) { // max user exceed 문제 방지. // 0이 나오면 진행하지 않는다.
+		key = static_cast<int>(iocp_key); 
+		if (FALSE == ret) { 
 			int error_no = WSAGetLastError();
-			if (64 == error_no) { // 
-				SaveDB(g_clients[key].name, g_clients[key].level, g_clients[key].x, g_clients[key].y, g_clients[key].exp);
+			if (64 == error_no) { 
+				SaveDB(g_clients[key].name, 
+					g_clients[key].level, g_clients[key].x, g_clients[key].y, g_clients[key].exp);
 				DisconnectClient(key);
 				continue;
 			}
@@ -696,27 +652,24 @@ void WorkerThread() {
 		OVER_EX* over_ex = reinterpret_cast<OVER_EX*>(lpover);
 		switch (over_ex->op_mode) {
 		case OP_MODE_ACCEPT: 
-		{ // 새 클라이언트 accept
+		{ 
 			AddNewClient(static_cast<SOCKET>(over_ex->wsa_buf.len)); 
 		}
 		break;
 		case OP_MODE_RECV:
 		{
-			if (io_size == 0) { // 클라이언트 접속 종료
-				SaveDB(g_clients[key].name, g_clients[key].level, g_clients[key].x, g_clients[key].y, g_clients[key].exp);
+			if (io_size == 0) { 
+				SaveDB(g_clients[key].name, 
+					g_clients[key].level, g_clients[key].x, g_clients[key].y, g_clients[key].exp);
 				DisconnectClient(key);
 			}
-			else { // 패킷 처리
+			else { 
 				ProcessRecv(key, io_size);
 			}
 		}
 		break;
 		case OP_MODE_SEND:
 		{
-			// ## send 완료의 구현
-			// overlapped 구조체와 buffer를 해제시킨다.
-			// 메모리를 재사용한다.
-			// 모든 자료구조를 확장 overlapped 구조체에 넣었으므로!
 			delete over_ex;
 		}
 		break;
@@ -727,7 +680,6 @@ void WorkerThread() {
 		break;
 		case OP_PLAYER_MOVE_NOTIFY:
 		{
-			//	x 다름 y 다름, x 같음 y 다름, x 다름 y 같음
 			g_clients[key].c_lock.lock();
 			lua_getglobal(g_clients[key].L, "event_player_move");
 			lua_pushnumber(g_clients[key].L, over_ex->object_id);
@@ -762,13 +714,8 @@ void TimerThread()
 				timer_l.unlock();
 
 				if (ev.event_id == OP_RANDOM_MOVE) {
-					//RandomMoveNPC(ev.obj_id);
-					//AddTimer(ev.obj_id, OP_RANDOM_MOVE, system_clock::now() + 1s);
 					OVER_EX* ex_over = new OVER_EX;
 					ex_over->op_mode = OP_RANDOM_MOVE;
-					// ## PostQueuedCompletionStatus의 용도.
-					// iocp를 사용할 경우 iocp가 main loop가 되기 때문에,
-					// socket i/o 이외에도 모든 다른 작업할 내용을 추가할 때 쓰인다.
 					PostQueuedCompletionStatus(h_iocp, 1, ev.obj_id, &ex_over->wsa_over);
 				}
 				if (ev.event_id == OP_PLAYER_HP_PLUS) {
@@ -785,16 +732,6 @@ void TimerThread()
 
 void AddNewClient(SOCKET ns)
 {
-	// 안 쓰는 id 찾기
-	//// 최적화 전 ----
-	//int i;
-	//id_lock.lock();
-	//for (i = 0; i < MAX_USER; ++i) {
-	//	if (false == g_clients[i].connected) 
-	//		break;
-	//}
-	//id_lock.unlock();
-	// 최적화 2 ----
 	int i = -1;
 	int compare_val = -1;
 	for (int j = 0; j < MAX_USER; ++j) {
@@ -804,8 +741,7 @@ void AddNewClient(SOCKET ns)
 			// Atomic, Wait-Free
 			// 공유 메모리 i가 있을 때, 모든 스레드에서 아래 CAS를 실행시키면
 			// 오직 하나의 스레드만 i가 compare_val이 되면서 true 리턴
-			atomic_compare_exchange_strong(
-				reinterpret_cast<atomic_int*>(&i), &compare_val, j);
+			atomic_compare_exchange_strong(reinterpret_cast<atomic_int*>(&i), &compare_val, j);
 			break;
 		}
 	}
@@ -816,15 +752,6 @@ void AddNewClient(SOCKET ns)
 	}
 	// 공간 남아 있으면
 	else {
-		// g_clients 배열에 정보 넣기
-		// 최적화 전 ----
-		//g_clients[i].c_lock.lock();
-		//g_clients[i].id = i;
-		//g_clients[i].connected = true;
-		//g_clients[i].sock = ns;
-		//g_clients[i].name[0] = 0; // null string으로 초기화 필수
-		//g_clients[i].c_lock.unlock();
-		// 최적화 후 ----
 		int i_compare_val = -1;
 		bool b_compare_val = false;
 		char c_compare_val = 0;
@@ -1017,9 +944,7 @@ void SendEnterPacket(int to_id, int new_id)
 	p.type = SC_PACKET_ENTER;
 	p.x = g_clients[new_id].x;
 	p.y = g_clients[new_id].y;
-	//g_clients[new_id].c_lock.lock();
 	strcpy_s(p.name, g_clients[new_id].name);
-	//g_clients[new_id].c_lock.unlock();
 	p.o_type = static_cast<char>(g_clients[new_id].m_type);
 	SendPacket(to_id, &p);
 }
@@ -1116,24 +1041,20 @@ void ErrorDisplay(const char* msg, int err_no) {
 		err_no,
 		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
 		(LPTSTR)&h_mess, 0, NULL);
-	std::cout << msg;
-	std::wcout << L"에러 =>" << h_mess << std::endl;
+	cout << msg;
+	wcout << L"에러 =>" << h_mess << std::endl;
 	while (true);
 	LocalFree(h_mess);
 }
 
 void InitializeNPC()
 {
-//#ifdef _DEBUG
 	cout << "Initializing NPCs\n";
-//#endif
 	for(int i = MAX_USER; i < MAX_USER + NUM_NPC; ++i) {
 		int x = g_clients[i].x = rand() % WORLD_WIDTH;
 		int y = g_clients[i].y = rand() % WORLD_HEIGHT;
-		// 섹터
-		int sx = g_clients[i].sx = x / S_SIZE;
+		int sx = g_clients[i].sx = x / S_SIZE; // sector
 		int sy = g_clients[i].sy = y / S_SIZE;
-		// 섹터에 정보 넣기
 		sector_l.lock();
 		g_sector[sx][sy].insert(i);
 		sector_l.unlock();
@@ -1143,7 +1064,7 @@ void InitializeNPC()
 		strcpy_s(g_clients[i].name, npc_name);
 		g_clients[i].is_active = false;
 		g_clients[i].hp = MAX_MONSTERHP;
-		g_clients[i].m_type = rand() % 3; // 몬스터 타입
+		g_clients[i].m_type = rand() % 3;
 		g_clients[i].c_lock.unlock();
 		// 가상 머신 생성
 		lua_State* L = g_clients[i].L = luaL_newstate();
@@ -1158,22 +1079,20 @@ void InitializeNPC()
 		lua_register(L, "API_get_y", API_get_y);
 		lua_register(L, "API_RandomMove", API_RandomMove);
 	}
-//#ifdef _DEBUG
 	cout << "Initializing NPCs finishied.\n";
-//#endif
 }
 
 void InitializeNetwork()
 {
 	WSADATA WSAdata;
 	int ret = WSAStartup(MAKEWORD(2, 0), &WSAdata);
-	if (ret != 0) ErrorDisplay("WSAStartup()", 0);
+	if (ret != 0) 
+		ErrorDisplay("WSAStartup()", 0);
 
 	h_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, NULL, 0);
 	g_listenSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 
-
-	CreateIoCompletionPort(reinterpret_cast<HANDLE>(g_listenSocket), h_iocp, KEY_SERVER, 0); // iocp에 리슨 소켓 등록
+	CreateIoCompletionPort(reinterpret_cast<HANDLE>(g_listenSocket), h_iocp, KEY_SERVER, 0); 
 
 	SOCKADDR_IN serverAddress;
 	memset(&serverAddress, 0, sizeof(SOCKADDR_IN));
@@ -1183,28 +1102,23 @@ void InitializeNetwork()
 	::bind(g_listenSocket, (sockaddr*)&serverAddress, sizeof(serverAddress));
 	listen(g_listenSocket, SOMAXCONN);
 
-	// Accept
 	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	g_accept_over.op_mode = OP_MODE_ACCEPT;
-	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
+	g_accept_over.wsa_buf.len = static_cast<int>(cSocket); 
 	ZeroMemory(&g_accept_over.wsa_over, sizeof(WSAOVERLAPPED));
-	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over); // accept ex의 데이터 영역 모자라서 클라이언트가 접속 못하는 문제 생겼음 (1006)
+	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over);
 
 }
 
 void InitializeObstacle() {
-	// 10000개 랜덤 생성 : 배열
-//	#ifdef _DEBUG
 	cout << "Initializing Obstacles\n";
-	//#endif
-	for (int i = MAX_USER+NUM_NPC; i < MAX_USER + NUM_NPC +NUM_OBSTACLE; ++i) {
+
+	for (int i = MAX_USER + NUM_NPC; i < MAX_USER + NUM_NPC + NUM_OBSTACLE; ++i) {
 		g_clients[i].x = rand() % WORLD_WIDTH;
 		g_clients[i].y = rand() % WORLD_HEIGHT;
 		g_clients[i].id = i;
-		// 섹터
 		int sx = g_clients[i].x / S_SIZE;
 		int sy = g_clients[i].y / S_SIZE;
-		// 섹터에 정보 넣기
 		sector_l.lock();
 		g_sector[sx][sy].insert(i);
 		sector_l.unlock();
@@ -1214,43 +1128,34 @@ void InitializeObstacle() {
 }
 
 void InitializeItem() {
-	// 10000개 랜덤 생성 : 배열
-//	#ifdef _DEBUG
 	cout << "Initializing Items\n";
-	//#endif
 	for (int i = MAX_USER + NUM_NPC + NUM_OBSTACLE; i < MAX_USER + NUM_NPC + NUM_OBSTACLE+NUM_ITEM; ++i) {
 		g_clients[i].x = rand() % WORLD_WIDTH;
 		g_clients[i].y = rand() % WORLD_HEIGHT;
 		g_clients[i].m_type = rand() % 2 + OTYPE_ITEM_HP;
 		g_clients[i].id = i;
-		// 섹터
 		int sx = g_clients[i].x / S_SIZE;
 		int sy = g_clients[i].y / S_SIZE;
-		// 섹터에 정보 넣기
 		sector_l.lock();
 		g_sector[sx][sy].insert(i);
 		sector_l.unlock();
 	}
-
 	cout << "Initializing Items finishied.\n";
 }
 
 
 void RandomMoveNPC(int id)
 {
-	// 이동 전 좌표
 	int x = g_clients[id].x;
 	int y = g_clients[id].y;
 	int sx = x / S_SIZE;
 	int sy = y / S_SIZE;
 
-	// 이동 전에 hp 확인, hp <0이면 사망 처리
 	if (g_clients[id].hp <= 0) {
 		g_clients[id].is_active = false;
 		g_clients[id].connected = false;
 		int sx = g_clients[id].sx = x / S_SIZE;
 		int sy = g_clients[id].sy = y / S_SIZE;
-		// 섹터에서 삭제
 		sector_l.lock();
 		g_sector[sx][sy].erase(id);
 		sector_l.unlock();
@@ -1498,47 +1403,26 @@ int API_RandomMove(lua_State* L) {
 	int monster_id = (int)lua_tointeger(L, -2);
 	int user_id = (int)lua_tointeger(L, -1);
 	lua_pop(L, 2);
-	//RandomMoveNPC(monster_id);
 	g_clients[monster_id].cnt_randommove = 0;
 	g_clients[monster_id].is_AIrandommove = true;
 	g_clients[monster_id].encountered_id = user_id;
-	// SendChatPacket(user_id, monster_id, mess);
 	return 0;
 }
 
 void InitializeDB()
 {
-	// Allocate environment handle  
 	SQLRETURN retcode = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &henv);
 
-	// Set the ODBC version environment attribute  
 	if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
 		retcode = SQLSetEnvAttr(henv, SQL_ATTR_ODBC_VERSION, (SQLPOINTER*)SQL_OV_ODBC3, 0);
 
-		// Allocate connection handle  
 		if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
 			retcode = SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
 
-			// Set login timeout to 5 seconds  
 			if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
 				SQLSetConnectAttr(hdbc, SQL_LOGIN_TIMEOUT, (SQLPOINTER)5, 0);
 
-				// Connect to data source  
 				retcode = SQLConnect(hdbc, (SQLWCHAR*)L"2020_gsp_kirby", SQL_NTS, (SQLWCHAR*)NULL, 0, NULL, 0);
-
-				//// Allocate statement handle  
-				//if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
-				//   retcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
-
-				//   
-				//   retcode = SQLExecDirect(hstmt, (SQLWCHAR*)L"Exec Save_user chaechae,100,1000, 800", SQL_NTS);
-				//   if (retcode == SQL_ERROR || retcode == SQL_SUCCESS_WITH_INFO)DB_ERROR(hstmt, SQL_HANDLE_STMT, retcode);
-				//    Process data  
-				//   if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
-				//      SQLCancel(hstmt);
-				//      SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
-				//   }
-				//}
 
 				cout << "DB 접속 완료" << endl;
 			}
@@ -1549,28 +1433,25 @@ void InitializeDB()
 }
 
 void LoadDB(const string name, int id) {
-   //요청한 id로 로그인실패 패킷 보내주기
-   wstring w_name;
-   w_name.assign(name.begin(), name.end());
+	wstring w_name;
+	w_name.assign(name.begin(), name.end());
 	SQLHSTMT hstmt = 0;
 	SQLRETURN retcode = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
 	retcode = SQLExecDirect(hstmt, (SQLWCHAR*)((L"SELECT USER_ID, USER_LEVEL, USER_X, USER_Y, USER_EXP FROM Table_User WHERE USER_ID = '" + w_name + L"'").c_str()), SQL_NTS);
 
 
-	SQLINTEGER LEVEL=0, X=0, Y=0, EXP=0; 
-	SQLWCHAR USERID[10]=L"";
+	SQLINTEGER LEVEL = 0, X = 0, Y = 0, EXP = 0;
+	SQLWCHAR USERID[10] = L"";
 	SQLLEN cbNAME = 0, cbLEVEL = 0, cbX = 0, cbY = 0, cbEXP = 0;
 
 
 	if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
 
-		// Bind columns 1, 2, and 3  
 		retcode = SQLBindCol(hstmt, 1, SQL_C_WCHAR, USERID, 10, &cbNAME);
 		retcode = SQLBindCol(hstmt, 2, SQL_C_LONG, &LEVEL, 100, &cbLEVEL);
 		retcode = SQLBindCol(hstmt, 3, SQL_C_LONG, &X, 100, &cbX);
 		retcode = SQLBindCol(hstmt, 4, SQL_C_LONG, &Y, 100, &cbY);
 		retcode = SQLBindCol(hstmt, 5, SQL_C_LONG, &EXP, 100, &cbEXP);
-		// Fetch and print each row of data. On an error, display a message and exit.  
 
 		retcode = SQLFetch(hstmt);
 
@@ -1583,7 +1464,8 @@ void LoadDB(const string name, int id) {
 			g_clients[id].level = LEVEL;
 			g_clients[id].exp = EXP;
 			g_clients[id].x = X;
-			g_clients[id].y = Y;			
+			g_clients[id].y = Y;
+
 			// 섹터
 			int sx = g_clients[id].sx = X / S_SIZE;
 			int sy = g_clients[id].sy = Y / S_SIZE;
@@ -1595,22 +1477,19 @@ void LoadDB(const string name, int id) {
 		}
 		else {
 
-			cout << "DB에 일치하는 ID가 없습니다." << name << endl;
-			//찾는이름이없다. 새로운 아이디를 만들어 저장!
+			cout << "DB에 일치하는 ID가 없습니다. 새로운 아이디를 만듭니다." << name << endl;
+
 			g_clients[id].c_lock.lock();
 			copy(name.begin(), name.end(), g_clients[id].name);
 			int x = g_clients[id].x = rand() % WORLD_WIDTH;
 			int y = g_clients[id].y = rand() % WORLD_HEIGHT;
-			// 섹터
-			int sx = g_clients[id].sx = x / S_SIZE;
-			int sy = g_clients[id].sy = y / S_SIZE;
-
-			// 경험치, 레벨, hp
 			g_clients[id].hp = MAX_PLAYERHP;
 			g_clients[id].exp = 0;
 			g_clients[id].level = 1;
 			g_clients[id].c_lock.unlock();
-			// 섹터에 정보 넣기
+			// 섹터
+			int sx = g_clients[id].sx = x / S_SIZE;
+			int sy = g_clients[id].sy = y / S_SIZE;
 			sector_l.lock();
 			g_sector[sx][sy].insert(id);
 			sector_l.unlock();
@@ -1619,7 +1498,7 @@ void LoadDB(const string name, int id) {
 		}
 		SQLFreeStmt(hstmt, SQL_DROP);
 	}
-	
+
 
 }
 
