@@ -13,7 +13,7 @@ void InitializeNetwork();
 void RandomMoveNPC(int id);
 void WakeUpNPC(int id);
 
-void AddTimer(int obj_id, int ev_type, system_clock::time_point t);
+void AddEventToTimer(int obj_id, int ev_type, system_clock::time_point t);
 
 void ProcessPacket(int id);
 void ProcessRecv(int id, DWORD iosize);
@@ -38,6 +38,7 @@ void SendEnterPacket(int to_id, int new_id);
 void SendMovePacket(int to_id, int id);
 void SendChatPacket(int to_client, int id, char* mess);
 void SendStatChangePacket(int id);
+void SendGameOverPacket(int id);
 
 int calcDist(int p1, int p2);
 

@@ -102,17 +102,11 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 	{
 		sc_packet_leave* my_packet = reinterpret_cast<sc_packet_leave*>(ptr);
 		int packet_id = my_packet->id;
-		if (packet_id == myid) { // ³»°¡ Á×À½
-			gameover = true;
-			gameover_timeout = high_resolution_clock::now() + 5s;
-		}
-		else {
-			pl.lock();
-			delete pPlayers[packet_id].name; // Enter ÇÒ ¶§ new ÇØÁá¾úÀ½
-			ZeroMemory(&(pPlayers[packet_id]), sizeof(pPlayers[packet_id]));
-			pPlayers[packet_id].connected = false;
-			pl.unlock();
-		}
+		pl.lock();
+		delete pPlayers[packet_id].name; // Enter ÇÒ ¶§ new ÇØÁá¾úÀ½
+		ZeroMemory(&(pPlayers[packet_id]), sizeof(pPlayers[packet_id]));
+		pPlayers[packet_id].connected = false;
+		pl.unlock();
 	}
 	break;
 	case SC_PACKET_CHAT:
@@ -146,6 +140,23 @@ void ProcessPacket(char* ptr, MainGame* maingame)
 		pPlayers[id].hp = p->hp;
 		pPlayers[id].exp = p->exp;
 		pPlayers[id].level = p->level;
+	}
+	break;
+	case SC_PACKET_GAMEOVER:
+	{
+		sc_packet_gameover* my_packet = reinterpret_cast<sc_packet_gameover*>(ptr);
+		int packet_id = my_packet->id;
+		if (packet_id == myid) { // Á×À½
+			gameover = true;
+			gameover_timeout = high_resolution_clock::now() + 3s;
+		}
+		else {
+			pl.lock();
+			delete pPlayers[packet_id].name; // Enter ÇÒ ¶§ new ÇØÁá¾úÀ½
+			ZeroMemory(&(pPlayers[packet_id]), sizeof(pPlayers[packet_id]));
+			pPlayers[packet_id].connected = false;
+			pl.unlock();
+		}
 	}
 	break;
 	default:

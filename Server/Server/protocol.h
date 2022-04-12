@@ -7,7 +7,7 @@ constexpr int MAX_USER = 10000;
 constexpr int WORLD_WIDTH = 800;
 constexpr int WORLD_HEIGHT = 800;
 constexpr int MAX_STR_LEN = 100;
-constexpr int VIEW_LIMIT = 7; // 시야 반지름, 상대방과 사이에 6개의 타일이 있어도 보여야 함.
+constexpr int VIEW_LIMIT = 10; // 시야 반지름, 상대방과 사이에 6개의 타일이 있어도 보여야 함.
 
 constexpr int NUM_NPC = 10000;
 
@@ -35,6 +35,7 @@ constexpr char SC_PACKET_LEAVE		= 3;
 constexpr char SC_PACKET_CHAT		= 4;
 constexpr char SC_PACKET_LOGIN_FAIL	= 5;
 constexpr char SC_PACKET_STAT_CHANGE	= 6;
+constexpr char SC_PACKET_GAMEOVER = 7;
 
 constexpr char CS_LOGIN		= 0;
 constexpr char CS_MOVE		= 1;
@@ -109,6 +110,9 @@ struct sc_packet_stat_change {
 	int   exp;
 };
 
+struct sc_packet_gameover {
+	int id;
+};
 
 struct cs_packet_login {
 	char  size;
@@ -139,6 +143,7 @@ struct cs_packet_logout {
 	char	size;
 	char	type;
 };
+
 
 
 #pragma pack (pop)

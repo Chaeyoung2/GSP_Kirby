@@ -6,8 +6,8 @@ client_info g_clients[MAX_USER + NUM_NPC + NUM_OBSTACLE + NUM_ITEM];
 OVER_EX g_accept_over; // accept용 overlapped 구조체
 mutex timer_l;
 mutex sector_l;
-priority_queue<event_type> timer_queue;
-unordered_set<int> g_sector[S_SIZE][S_SIZE];
+priority_queue<event_info> event_queue;
+unordered_set<int> g_sector[S_CNT][S_CNT];
 SQLHENV henv;
 SQLHDBC hdbc;
 SQLHSTMT hstmt = 0;
@@ -58,7 +58,6 @@ void ProcessPacket(int id)
 		LoadDB(string(p->name), id);
 		SendLoginOK(id);
 		ProcessLogin(id);
-
 	}
 	break;
 	case CS_MOVE:
@@ -154,9 +153,6 @@ void ProcessMove(int id, char dir)
 		if (x < WORLD_WIDTH - 1) x++;
 		break;
 	default:
-#ifdef _DEBUG
-		cout << "Unknown Direction in CS_MOVE packet\n";
-#endif
 		while (true);
 		break;
 	}
@@ -167,8 +163,9 @@ void ProcessMove(int id, char dir)
 	int cur_y = y;
 	int cur_sx = cur_x / S_SIZE;
 	int cur_sy = cur_y / S_SIZE;
-	///// 섹터
-	if (sx != cur_sx || sy != cur_sy) {	// sx, sy와 cur_sx, cur_sy가 동일하다면 -> 그대로 // 다르면 -> 이전 섹터에서 erase, 새로운 섹터에 insert
+
+
+	if (sx != cur_sx || sy != cur_sy) {	
 		sector_l.lock();
 		g_sector[sx][sy].erase(id);
 		g_sector[cur_sx][cur_sy].insert(id);
@@ -565,14 +562,18 @@ void StatChange_MonsterCollide(int id, int mon_id) {
 	int damage = MONSTER_ATTACKDAMAGE;
 	g_clients[id].c_lock.lock();
 	g_clients[id].hp -= damage;
-	if (g_clients[id].hp < 0) { // 플레이어 사망 처리
+	if (g_clients[id].hp <= 0) { // 플레이어 사망 처리
 		g_clients[id].hp = MAX_PLAYERHP;
 		g_clients[id].exp /= 2; // 경험치 절반 깎임
 		g_clients[id].x = rand() % WORLD_WIDTH;
 		g_clients[id].y = rand() % WORLD_HEIGHT;
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 7s;
 		g_clients[id].c_lock.unlock();
-		SendLeavePacket(id, id);
+		SendGameOverPacket(id);
+		SendStatChangePacket(id); // 상태 바뀜 패킷
+
+		// 근데 여기서..
+		// id말고 id의 뷰리스트에 있는 플레이어들한테도 알려야 되거든???... 일단 시간 없으니까 여까지만 구현하자
 	}
 	else {
 		g_clients[id].invincible_timeout = high_resolution_clock::now() + 2s;
@@ -581,10 +582,10 @@ void StatChange_MonsterCollide(int id, int mon_id) {
 		cout << "몬스터 " << mon_id << "의 공격으로 플레이어 " << id << "가 " << damage << "의 데미지를 입습니다." << endl;
 #endif
 		char mess[MAX_STR_LEN];
-		sprintf_s(mess, "몬스터 %d의 공격으로 플레이어 %d이 %d의 데미지를 입었습니다.", mon_id, id, damage);
+		sprintf_s(mess, "몬스터 %d로 인해 플레이어 %d가 %d의 데미지를 입습니다.", mon_id, id, damage);
 		SendChatPacket(id, -1, mess); // 전챗
+		SendStatChangePacket(id); // 상태 바뀜 패킷
 	}
-	SendStatChangePacket(id); // 상태 바뀜 패킷
 }
 
 void StatChange_ItemCollide(int id, int item_id) {
@@ -622,7 +623,7 @@ void StatChange_ItemCollide(int id, int item_id) {
 #endif
 		sprintf_s(mess, "플레이어 %d가 버프 포션을 먹어 3초간 공격력 2배 버프를 얻습니다.", id);		
 		// 플레이어 체력 timer
-		AddTimer(id, OP_PLAYER_BUF, system_clock::now() + 3s);
+		AddEventToTimer(id, OP_PLAYER_BUF, system_clock::now() + 3s);
 	}
 	SendChatPacket(id, -1, mess); // 전챗
 
@@ -660,7 +661,8 @@ void WorkerThread() {
 		{
 			if (io_size == 0) { 
 				SaveDB(g_clients[key].name, 
-					g_clients[key].level, g_clients[key].x, g_clients[key].y, g_clients[key].exp);
+					g_clients[key].level, g_clients[key].x, 
+					g_clients[key].y, g_clients[key].exp);
 				DisconnectClient(key);
 			}
 			else { 
@@ -706,11 +708,11 @@ void TimerThread()
 {
 	while (true) {
 		while (true) {
-			if (false == timer_queue.empty()) {
-				event_type ev = timer_queue.top();
+			if (false == event_queue.empty()) {
+				event_info ev = event_queue.top();
 				if (ev.wakeup_time > system_clock::now()) break;
 				timer_l.lock();
-				timer_queue.pop();
+				event_queue.pop();
 				timer_l.unlock();
 
 				if (ev.event_id == OP_RANDOM_MOVE) {
@@ -736,21 +738,16 @@ void AddNewClient(SOCKET ns)
 	int compare_val = -1;
 	for (int j = 0; j < MAX_USER; ++j) {
 		if (false == g_clients[j].connected) {
-			// c++11에서의 CAS 구현
-			// Compare And Set
-			// Atomic, Wait-Free
-			// 공유 메모리 i가 있을 때, 모든 스레드에서 아래 CAS를 실행시키면
-			// 오직 하나의 스레드만 i가 compare_val이 되면서 true 리턴
 			atomic_compare_exchange_strong(reinterpret_cast<atomic_int*>(&i), &compare_val, j);
 			break;
 		}
 	}
-	// id 다 차면 close
+
 	if (MAX_USER == i) {
 		cout << "Max user limit exceeded\n";
 		closesocket(ns);
 	}
-	// 공간 남아 있으면
+
 	else {
 		int i_compare_val = -1;
 		bool b_compare_val = false;
@@ -761,47 +758,25 @@ void AddNewClient(SOCKET ns)
 		atomic_compare_exchange_strong(reinterpret_cast<atomic_uintptr_t*>(&g_clients[i].sock), &u_compare_val, ns);
 		atomic_compare_exchange_strong(reinterpret_cast<atomic_char*>(&(g_clients[i].name[0])), &c_compare_val, 0);
 
-		// ## overlapped io pointer 확장.
+
 		g_clients[i].m_packet_start = g_clients[i].m_recv_over.iocp_buf;
 		g_clients[i].m_recv_over.op_mode = OP_MODE_RECV;
-		g_clients[i].m_recv_over.wsa_buf.buf = reinterpret_cast<CHAR*>(g_clients[i].m_recv_over.iocp_buf); // 실제 버퍼의 주소 가리킴
+		g_clients[i].m_recv_over.wsa_buf.buf = reinterpret_cast<CHAR*>(g_clients[i].m_recv_over.iocp_buf); 
 		g_clients[i].m_recv_over.wsa_buf.len = sizeof(g_clients[i].m_recv_over.iocp_buf);
 		ZeroMemory(&g_clients[i].m_recv_over.wsa_over, sizeof(g_clients[i].m_recv_over.wsa_over));
-		g_clients[i].m_recv_start = g_clients[i].m_recv_over.iocp_buf; // 이 위치에서 받기 시작한다.
-		// db에서 불러오든가 할 거임.
-		//g_clients[i].c_lock.lock();
-		//int x = g_clients[i].x = rand() % WORLD_WIDTH;
-		//int y = g_clients[i].y = rand() % WORLD_HEIGHT;
-		//// 섹터
-		//int sx = g_clients[i].sx = x / S_SIZE;
-		//int sy = g_clients[i].sy = y / S_SIZE;
-		//// 경험치, 레벨, hp
-		//g_clients[i].hp = MAX_PLAYERHP;
-		//g_clients[i].exp = 0;
-		//g_clients[i].level = 1;
-		//g_clients[i].c_lock.unlock();
-		//// 섹터에 정보 넣기
-		//sector_l.lock();
-		//g_sector[sx][sy].insert(i);
-		//sector_l.unlock();
+		g_clients[i].m_recv_start = g_clients[i].m_recv_over.iocp_buf; 
 
-		// ## 새로 접속한 소켓을 iocp에 등록(연결)
+
 		DWORD flags = 0;
-		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0); // 소켓을 iocp에 등록
-		// Recv
-		// 최적화 전
+		CreateIoCompletionPort(reinterpret_cast<HANDLE>(ns), h_iocp, i, 0); 
+
 		g_clients[i].c_lock.lock();
 		int ret = 0;
 		if (true == g_clients[i].connected) {
 			ret = WSARecv(g_clients[i].sock, &g_clients[i].m_recv_over.wsa_buf, 1, NULL, &flags, &(g_clients[i].m_recv_over.wsa_over), NULL);
 		}
 		g_clients[i].c_lock.unlock();
-		// 최적화 후
-		//int ret = 0;
-		//bool connected = true;
-		//if (true == atomic_compare_exchange_strong(&g_clients[i].connected, &connected, true)) {
-		//	WSARecv(g_clients[i].sock, &g_clients[i].m_recv_over.wsa_buf, 1, NULL, 0, &(g_clients[i].m_recv_over.wsa_over), NULL);
-		//}
+
 		if (ret == SOCKET_ERROR) {
 			int error_no = WSAGetLastError();
 			if (error_no != ERROR_IO_PENDING) {
@@ -809,29 +784,14 @@ void AddNewClient(SOCKET ns)
 			}
 		}
 
-		// 플레이어 체력 timer
-		AddTimer(i, OP_PLAYER_HP_PLUS, system_clock::now() + 5s);
+		AddEventToTimer(i, OP_PLAYER_HP_PLUS, system_clock::now() + 5s);
 	}
-	// 다시 accept
-	// ## Accept 처리.
-	// acceptEx로 비동기 처리 : listen socket을 iocp에 등록 후 acceptEX 호출
-	// 무한 루프를 돌면서
-	// - 새 클라이언트 접속 시 클라이언트 객체 만듦.
-	// - iocp에 소켓을 등록한다. (send recv가 iocp를 통해 수행됨)
-	// - WSARecv()를 호출한다. (overlapped io recv 상태를 항상 유지하여야 함)
-	// - acceptEX()를 다시 호출
-	// ## 멀티 플레이어 - 완료 처리
-	// 완료된 소켓으로 새 클라이언트 생성
-	// 새로운 socket을 생성
+
 	SOCKET cSocket = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
 	g_accept_over.op_mode = OP_MODE_ACCEPT;
-	g_accept_over.wsa_buf.len = static_cast<ULONG>(cSocket); // 같은 integer끼리 그냥.. 넣어줌.... ??
-	ZeroMemory(&g_accept_over.wsa_over, sizeof(g_accept_over.wsa_over));// accept overlapped 구조체 사용 전 초기화
-	// ## 비동기 Accept
-	// 메인 루프가 GetQueuedCompletionStatus()로 대기해야 하므로.
-	// Accept 또한 IOCP로 수신한다. -> AcceptEx
-	// AcceptEx(서버 메인 소켓, 클라이언트 연결 소켓, 클라이언트 주소 저장 버퍼,
-	//					recv할 데이터 크기, 서버 주소 사이즈, 클라 주소 사이즈, overlapped 구조체)
+	g_accept_over.wsa_buf.len = static_cast<ULONG>(cSocket);
+	ZeroMemory(&g_accept_over.wsa_over, sizeof(g_accept_over.wsa_over));
+
 	AcceptEx(g_listenSocket, cSocket, g_accept_over.iocp_buf, 0, 32, 32, NULL, &g_accept_over.wsa_over);
 }
 
@@ -893,24 +853,14 @@ void SendPacket(int id, void* p)
 	send_over->wsa_buf.len = packet[0];
 	ZeroMemory(&send_over->wsa_over, sizeof(send_over->wsa_over));
 	//클라이언트의 소켓에 접근하므로 lock
-	g_clients[id].c_lock.lock();
-	// ## WSASend의 사용
-	// send는 여러 Thread에서 동시다발적으로 발생한다.
-	// send하는 overlapped 구조체와 buffer는 send가 끝날 때까지 유지되어야 한다.
-	// - 개수를 미리 알 수 없으므로 dynamic하게 관리
-	// 부분 send인 경우
-	// - 버퍼가 비워지지 않은 경우..
-	// - 에러 처리 하고 끊어 버린다.
-	// -- 현재 운영체제의 메모리가 꽉 찬 경우
-	// -- 이런 불상사를 막으려면 send하는 데이터 양을 조절한다.
-	if (true == g_clients[id].connected) // use 중이므로 sock이 살아있다
-		WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
-	g_clients[id].c_lock.unlock();
-	//// 최적화
-	//bool connected = true;
-	//if (true == atomic_compare_exchange_strong(&g_clients[id].connected, &connected, true)) {
+	//g_clients[id].c_lock.lock();
 	//	WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
-	//}
+	//g_clients[id].c_lock.unlock();
+	// 최적화
+	bool connected = true;
+	if (true == atomic_compare_exchange_strong(&g_clients[id].connected, &connected, true)) {
+		WSASend(g_clients[id].sock, &send_over->wsa_buf, 1, NULL, 0, &send_over->wsa_over, NULL);
+	}
 }
 
 void SendLeavePacket(int to_id, int id)
@@ -981,6 +931,10 @@ void SendStatChangePacket(int id) {
 	p.size = sizeof(p);
 	p.type = SC_PACKET_STAT_CHANGE;
 	SendPacket(id, &p);
+}
+
+void SendGameOverPacket(int id)
+{
 }
 
 
@@ -1247,7 +1201,7 @@ void RandomMoveNPC(int id)
 
 	// sector 처리 -------------------
 	// sx, sy와 cur_sx, cur_sy가 동일하다면 -> 그대로
-	//											다르면 -> 이전 섹터에서 erase, 새로운 섹터에 insert
+	// 다르면 -> 이전 섹터에서 erase, 새로운 섹터에 insert
 	if (sx != cur_sx || sy != cur_sy) {
 		sector_l.lock();
 		g_sector[sx][sy].erase(id);
@@ -1265,42 +1219,34 @@ void RandomMoveNPC(int id)
 	// 이동 후 처리
 	for (auto pl : o_vl) {
 		if (0 < n_vl.count(pl)) {
-			//g_clients[pl].c_lock.lock();
 			if (0 < g_clients[pl].view_list.count(id)) {
-				//g_clients[pl].c_lock.unlock();
 				SendMovePacket(pl, id);
 			}
 			else {
 				g_clients[pl].c_lock.lock();
 				g_clients[pl].view_list.insert(id);
 				g_clients[pl].c_lock.unlock();
-				//g_clients[pl].c_lock.unlock();
 				SendEnterPacket(pl, id);
 			}
 		}
 		else {
-			//g_clients[pl].c_lock.lock();
 			if (0 < g_clients[pl].view_list.count(id)) {
 				g_clients[pl].c_lock.lock();
 				g_clients[pl].view_list.erase(id);
 				g_clients[pl].c_lock.unlock();
-				//g_clients[pl].c_lock.unlock();
 				SendLeavePacket(pl, id);
 			}
 		}
 	}
 	for (auto pl : n_vl) {
-		//g_clients[pl].c_lock.lock();
 		if (0 == g_clients[pl].view_list.count(pl)) {
 			if (0 == g_clients[pl].view_list.count(id)) {
 				g_clients[pl].c_lock.lock();
 				g_clients[pl].view_list.insert(id);
 				g_clients[pl].c_lock.unlock();
-				//g_clients[pl].c_lock.unlock();
 				SendEnterPacket(pl, id);
 			}
 			else {
-				//g_clients[pl].c_lock.unlock();
 				SendMovePacket(pl, id);
 			}
 		}
@@ -1334,7 +1280,7 @@ void RandomMoveNPC(int id)
 		g_clients[id].is_active = false;
 	}
 	else {
-		AddTimer(id, OP_RANDOM_MOVE, system_clock::now() + 1s);
+		AddEventToTimer(id, OP_RANDOM_MOVE, system_clock::now() + 1s);
 	}
 
 	for (auto pc : n_vl) {
@@ -1352,14 +1298,14 @@ void WakeUpNPC(int id)
 	bool b = false;
 	if (true == g_clients[id].is_active.compare_exchange_strong(b, true))
 	{
-		AddTimer(id, OP_RANDOM_MOVE, system_clock::now() + 1s);
+		AddEventToTimer(id, OP_RANDOM_MOVE, system_clock::now() + 1s);
 	}
 }
 
-void AddTimer(int obj_id, int ev_type, system_clock::time_point t) {
-	event_type ev{ obj_id, t, ev_type };
+void AddEventToTimer(int obj_id, int ev_type, system_clock::time_point t) {
+	event_info ev{ obj_id, t, ev_type };
 	timer_l.lock();
-	timer_queue.push(ev);
+	event_queue.push(ev);
 	timer_l.unlock();
 }
 
@@ -1369,7 +1315,7 @@ void PlayerHPPlus(int id) {
 		SendStatChangePacket(id);
 	}
 	// 다시 
-	AddTimer(id, OP_PLAYER_HP_PLUS , system_clock::now() + 5s);
+	AddEventToTimer(id, OP_PLAYER_HP_PLUS, system_clock::now() + 5s);
 }
 
 int API_SendMessage(lua_State* L) {
@@ -1422,7 +1368,7 @@ void InitializeDB()
 			if (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO) {
 				SQLSetConnectAttr(hdbc, SQL_LOGIN_TIMEOUT, (SQLPOINTER)5, 0);
 
-				retcode = SQLConnect(hdbc, (SQLWCHAR*)L"2020_gsp_kirby", SQL_NTS, (SQLWCHAR*)NULL, 0, NULL, 0);
+				retcode = SQLConnect(hdbc, (SQLWCHAR*)L"kirby_db", SQL_NTS, (SQLWCHAR*)NULL, 0, NULL, 0);
 
 				cout << "DB 접속 완료" << endl;
 			}
